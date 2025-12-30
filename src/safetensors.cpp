@@ -2,9 +2,14 @@
 
 #include <cstdint>
 #include <fstream>
+#include <iostream>
+#include <nlohmann/json.hpp>
+#include <stdexcept>
 #include <vector>
 
-std::vector<std::uint8_t> load_file(const std::string& filename) {
+using json = nlohmann::json;
+
+std::vector<uint8_t> load_file(const std::string& filename) {
   std::ifstream input{filename, std::ios::binary};
   if (!input) throw std::runtime_error("failed to open: " + filename);
 
@@ -14,7 +19,7 @@ std::vector<std::uint8_t> load_file(const std::string& filename) {
 
   if (size < 0) throw std::runtime_error("tellg failed: " + filename);
 
-  std::vector<std::uint8_t> buf(static_cast<size_t>(size));
+  std::vector<uint8_t> buf(static_cast<size_t>(size));
   if (!input.read(reinterpret_cast<char*>(buf.data()), size)) {
     throw std::runtime_error("failed to read: " + filename);
   }
@@ -22,7 +27,7 @@ std::vector<std::uint8_t> load_file(const std::string& filename) {
   return buf;
 }
 
-void parse_header(const std::vector<std::uint8_t>& buf) {
+void parse_header(const std::vector<uint8_t>& buf) {
   if (buf.size() < 8) throw std::runtime_error("header truncated");
 
   uint64_t headerSize{};
@@ -37,4 +42,5 @@ void parse_header(const std::vector<std::uint8_t>& buf) {
 
   std::string header{reinterpret_cast<const char*>(&buf[8]),
                      static_cast<size_t>(headerSize)};
+  json header_data = json::parse(header);
 }

@@ -1,6 +1,7 @@
 #include <string>
 
 #include "safetensors.h"
+#include "tensor.h"
 
 int main() {
   const std::string tensor_file{
@@ -10,5 +11,6 @@ int main() {
       "model-00001-of-00003.safetensors"};
   std::vector<uint8_t> buf = load_file(tensor_file);
   parse_header(buf);
+  Tensor<float> tensor{Shape{2, 3}};
   return 0;
 }
