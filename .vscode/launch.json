@@ -1,0 +1,15 @@
+{
+    "configurations": [
+        {
+            "name": "CMake: Debug",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${command:cmake.launchTargetPath}",
+            "cwd": "${command:cmake.launchTargetDirectory}",
+            "MIMode": "lldb",
+            "args": [
+                "/Users/dlewis/.cache/huggingface/hub/models--Qwen--Qwen3-4B-Instruct-2507/snapshots/cdbee75f17c01a7cc42f958dc650907174af0554/model-00001-of-00003.safetensors"
+            ]
+        }
+    ]
+}

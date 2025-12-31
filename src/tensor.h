@@ -16,7 +16,9 @@ template <typename T>
 class Tensor {
  public:
   Tensor(const Shape& s);
-  Shape shape() const;
+  const Shape& dims() const;
+  size_t ndim() const;
+  size_t numel() const;
 
  private:
   Shape shape_;
@@ -33,6 +35,16 @@ Tensor<T>::Tensor(const Shape& s) : shape_{s} {
 }
 
 template <typename T>
-Shape Tensor<T>::shape() const {
+const Shape& Tensor<T>::dims() const {
   return shape_;
+}
+
+template <typename T>
+size_t Tensor<T>::ndim() const {
+  return shape_.dims().size();
+}
+
+template <typename T>
+size_t Tensor<T>::numel() const {
+  return data_.size();
 }
