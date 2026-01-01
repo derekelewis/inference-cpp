@@ -65,7 +65,9 @@ ctest -L slow --output-on-failure
 ## Performance
 
 Current performance on CPU (single-threaded, no SIMD):
-- ~18 seconds per token (Qwen3-4B, Release build)
+- ~2.7 seconds per token (Qwen3-4B, Release build)
+
+Uses stride-based tensor views to minimize memory copies. See `docs/tensor-views-migration.md` for implementation details.
 
 ## Assumptions
 
