@@ -1,0 +1,1481 @@
+#include <gtest/gtest.h>
+
+#include <cmath>
+#include <vector>
+
+#include "tensor.h"
+
+// Helper for floating point comparison
+constexpr float kEpsilon = 1e-5f;
+
+// ============================================================================
+// Shape Tests
+// ============================================================================
+
+TEST(ShapeTest, ConstructorWithInitializerList) {
+  Shape s({2, 3, 4});
+  EXPECT_EQ(s.ndim(), 3u);
+  EXPECT_EQ(s[0], 2u);
+  EXPECT_EQ(s[1], 3u);
+  EXPECT_EQ(s[2], 4u);
+}
+
+TEST(ShapeTest, ConstructorWithVector) {
+  std::vector<size_t> dims = {5, 10};
+  Shape s(dims);
+  EXPECT_EQ(s.ndim(), 2u);
+  EXPECT_EQ(s[0], 5u);
+  EXPECT_EQ(s[1], 10u);
+}
+
+TEST(ShapeTest, NumelCalculation) {
+  Shape s({2, 3, 4});
+  EXPECT_EQ(s.numel(), 24u);
+}
+
+TEST(ShapeTest, DimsAccessor) {
+  Shape s({3, 4});
+  const auto& dims = s.dims();
+  EXPECT_EQ(dims.size(), 2u);
+  EXPECT_EQ(dims[0], 3u);
+  EXPECT_EQ(dims[1], 4u);
+}
+
+TEST(ShapeTest, EqualityOperator) {
+  Shape s1({2, 3});
+  Shape s2({2, 3});
+  Shape s3({3, 2});
+  EXPECT_TRUE(s1 == s2);
+  EXPECT_FALSE(s1 == s3);
+  EXPECT_TRUE(s1 != s3);
+}
+
+TEST(ShapeTest, InvalidShapeThrows) {
+  EXPECT_THROW(Shape({}), std::runtime_error);
+}
+
+TEST(ShapeTest, IndexOutOfRangeThrows) {
+  Shape s({2, 3});
+  EXPECT_THROW(s[5], std::out_of_range);
+}
+
+// ============================================================================
+// Tensor Constructor Tests
+// ============================================================================
+
+TEST(TensorConstructorTest, DefaultConstructor) {
+  Tensor<float> t;
+  EXPECT_EQ(t.numel(), 1u);
+  EXPECT_EQ(t.ndim(), 1u);
+}
+
+TEST(TensorConstructorTest, ShapeConstructor) {
+  Tensor<float> t(Shape({2, 3}));
+  EXPECT_EQ(t.numel(), 6u);
+  EXPECT_EQ(t.ndim(), 2u);
+  EXPECT_EQ(t.size(0), 2u);
+  EXPECT_EQ(t.size(1), 3u);
+}
+
+TEST(TensorConstructorTest, FillValueConstructor) {
+  Tensor<float> t(Shape({2, 3}), 5.0f);
+  EXPECT_EQ(t.numel(), 6u);
+  for (size_t i = 0; i < t.numel(); ++i) {
+    EXPECT_FLOAT_EQ(t(i), 5.0f);
+  }
+}
+
+TEST(TensorConstructorTest, DataVectorConstructor) {
+  std::vector<float> data = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+  Tensor<float> t(Shape({2, 3}), data);
+  EXPECT_EQ(t.numel(), 6u);
+  for (size_t i = 0; i < t.numel(); ++i) {
+    EXPECT_FLOAT_EQ(t(i), data[i]);
+  }
+}
+
+TEST(TensorConstructorTest, CopyConstructor) {
+  Tensor<float> t1(Shape({2, 3}), 3.0f);
+  Tensor<float> t2(t1);
+  EXPECT_EQ(t2.numel(), 6u);
+  for (size_t i = 0; i < t2.numel(); ++i) {
+    EXPECT_FLOAT_EQ(t2(i), 3.0f);
+  }
+}
+
+TEST(TensorConstructorTest, MoveConstructor) {
+  Tensor<float> t1(Shape({2, 3}), 3.0f);
+  Tensor<float> t2(std::move(t1));
+  EXPECT_EQ(t2.numel(), 6u);
+  for (size_t i = 0; i < t2.numel(); ++i) {
+    EXPECT_FLOAT_EQ(t2(i), 3.0f);
+  }
+}
+
+TEST(TensorConstructorTest, DataSizeMismatchThrows) {
+  std::vector<float> data = {1.0f, 2.0f, 3.0f};
+  EXPECT_THROW(Tensor<float>(Shape({2, 3}), data), std::runtime_error);
+}
+
+// ============================================================================
+// Data Access Tests
+// ============================================================================
+
+TEST(TensorAccessTest, DataPointer) {
+  Tensor<float> t(Shape({2, 3}), 1.0f);
+  float* data = t.data();
+  EXPECT_NE(data, nullptr);
+  data[0] = 5.0f;
+  EXPECT_FLOAT_EQ(t(0), 5.0f);
+}
+
+TEST(TensorAccessTest, OneDimensionalAccess) {
+  std::vector<float> data = {1.0f, 2.0f, 3.0f};
+  Tensor<float> t(Shape({3}), data);
+  EXPECT_FLOAT_EQ(t(0), 1.0f);
+  EXPECT_FLOAT_EQ(t(1), 2.0f);
+  EXPECT_FLOAT_EQ(t(2), 3.0f);
+}
+
+TEST(TensorAccessTest, TwoDimensionalAccess) {
+  // Row-major: [[1, 2, 3], [4, 5, 6]]
+  std::vector<float> data = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+  Tensor<float> t(Shape({2, 3}), data);
+  EXPECT_FLOAT_EQ(t(0, 0), 1.0f);
+  EXPECT_FLOAT_EQ(t(0, 2), 3.0f);
+  EXPECT_FLOAT_EQ(t(1, 0), 4.0f);
+  EXPECT_FLOAT_EQ(t(1, 2), 6.0f);
+}
+
+TEST(TensorAccessTest, ThreeDimensionalAccess) {
+  Tensor<float> t(Shape({2, 3, 4}));
+  t(1, 2, 3) = 42.0f;
+  EXPECT_FLOAT_EQ(t(1, 2, 3), 42.0f);
+}
+
+TEST(TensorAccessTest, FourDimensionalAccess) {
+  Tensor<float> t(Shape({2, 3, 4, 5}));
+  t(1, 2, 3, 4) = 99.0f;
+  EXPECT_FLOAT_EQ(t(1, 2, 3, 4), 99.0f);
+}
+
+TEST(TensorAccessTest, AtMethodAccess) {
+  std::vector<float> data = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+  Tensor<float> t(Shape({2, 3}), data);
+  EXPECT_FLOAT_EQ(t.at({0, 0}), 1.0f);
+  EXPECT_FLOAT_EQ(t.at({1, 2}), 6.0f);
+}
+
+TEST(TensorAccessTest, AtMethodWrite) {
+  Tensor<float> t(Shape({2, 3}));
+  t.at({1, 1}) = 7.0f;
+  EXPECT_FLOAT_EQ(t.at({1, 1}), 7.0f);
+}
+
+// ============================================================================
+// Shape Manipulation Tests
+// ============================================================================
+
+TEST(TensorReshapeTest, BasicReshape) {
+  std::vector<float> data = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+  Tensor<float> t(Shape({2, 3}), data);
+  Tensor<float> reshaped = t.reshape(Shape({3, 2}));
+  EXPECT_EQ(reshaped.size(0), 3u);
+  EXPECT_EQ(reshaped.size(1), 2u);
+  // Data order preserved
+  EXPECT_FLOAT_EQ(reshaped(0), 1.0f);
+  EXPECT_FLOAT_EQ(reshaped(5), 6.0f);
+}
+
+TEST(TensorReshapeTest, ReshapeToFlat) {
+  Tensor<float> t(Shape({2, 3}), 1.0f);
+  Tensor<float> flat = t.reshape(Shape({6}));
+  EXPECT_EQ(flat.ndim(), 1u);
+  EXPECT_EQ(flat.numel(), 6u);
+}
+
+TEST(TensorReshapeTest, InvalidReshapeThrows) {
+  Tensor<float> t(Shape({2, 3}));
+  EXPECT_THROW(t.reshape(Shape({5})), std::runtime_error);
+}
+
+TEST(TensorTransposeTest, Basic2DTranspose) {
+  std::vector<float> data = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+  Tensor<float> t(Shape({2, 3}), data);
+  Tensor<float> transposed = t.transpose();
+  EXPECT_EQ(transposed.size(0), 3u);
+  EXPECT_EQ(transposed.size(1), 2u);
+  EXPECT_FLOAT_EQ(transposed(0, 0), 1.0f);
+  EXPECT_FLOAT_EQ(transposed(0, 1), 4.0f);
+  EXPECT_FLOAT_EQ(transposed(2, 0), 3.0f);
+  EXPECT_FLOAT_EQ(transposed(2, 1), 6.0f);
+}
+
+TEST(TensorTransposeTest, TransposeWithDims) {
+  Tensor<float> t(Shape({2, 3, 4}));
+  for (size_t i = 0; i < t.numel(); ++i) {
+    t(i) = static_cast<float>(i);
+  }
+  Tensor<float> transposed = t.transpose(0, 2);
+  EXPECT_EQ(transposed.size(0), 4u);
+  EXPECT_EQ(transposed.size(1), 3u);
+  EXPECT_EQ(transposed.size(2), 2u);
+}
+
+TEST(TensorPermuteTest, BasicPermute) {
+  Tensor<float> t(Shape({2, 3, 4}));
+  for (size_t i = 0; i < t.numel(); ++i) {
+    t(i) = static_cast<float>(i);
+  }
+  Tensor<float> permuted = t.permute({2, 0, 1});
+  EXPECT_EQ(permuted.size(0), 4u);
+  EXPECT_EQ(permuted.size(1), 2u);
+  EXPECT_EQ(permuted.size(2), 3u);
+}
+
+TEST(TensorSqueezeTest, SqueezeDimension) {
+  Tensor<float> t(Shape({2, 1, 3}), 1.0f);
+  Tensor<float> squeezed = t.squeeze(1);
+  EXPECT_EQ(squeezed.ndim(), 2u);
+  EXPECT_EQ(squeezed.size(0), 2u);
+  EXPECT_EQ(squeezed.size(1), 3u);
+}
+
+TEST(TensorSqueezeTest, SqueezeInvalidDimThrows) {
+  Tensor<float> t(Shape({2, 3}));
+  EXPECT_THROW(t.squeeze(0), std::runtime_error);
+}
+
+TEST(TensorUnsqueezeTest, UnsqueezeDimension) {
+  Tensor<float> t(Shape({2, 3}), 1.0f);
+  Tensor<float> unsqueezed = t.unsqueeze(1);
+  EXPECT_EQ(unsqueezed.ndim(), 3u);
+  EXPECT_EQ(unsqueezed.size(0), 2u);
+  EXPECT_EQ(unsqueezed.size(1), 1u);
+  EXPECT_EQ(unsqueezed.size(2), 3u);
+}
+
+TEST(TensorSliceTest, BasicSlice) {
+  std::vector<float> data = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+  Tensor<float> t(Shape({2, 3}), data);
+  Tensor<float> sliced = t.slice(1, 0, 2);
+  EXPECT_EQ(sliced.size(0), 2u);
+  EXPECT_EQ(sliced.size(1), 2u);
+  EXPECT_FLOAT_EQ(sliced(0, 0), 1.0f);
+  EXPECT_FLOAT_EQ(sliced(0, 1), 2.0f);
+  EXPECT_FLOAT_EQ(sliced(1, 0), 4.0f);
+  EXPECT_FLOAT_EQ(sliced(1, 1), 5.0f);
+}
+
+TEST(TensorSliceTest, InvalidSliceThrows) {
+  Tensor<float> t(Shape({2, 3}));
+  EXPECT_THROW(t.slice(0, 5, 10), std::runtime_error);
+}
+
+TEST(TensorContiguousTest, ContiguousReturnsClone) {
+  Tensor<float> t(Shape({2, 3}), 5.0f);
+  Tensor<float> c = t.contiguous();
+  EXPECT_EQ(c.numel(), t.numel());
+  for (size_t i = 0; i < t.numel(); ++i) {
+    EXPECT_FLOAT_EQ(c(i), t(i));
+  }
+}
+
+// ============================================================================
+// Element-wise Operations Tests
+// ============================================================================
+
+TEST(TensorElementWiseTest, TensorAddition) {
+  Tensor<float> a(Shape({2, 3}), 1.0f);
+  Tensor<float> b(Shape({2, 3}), 2.0f);
+  Tensor<float> c = a + b;
+  for (size_t i = 0; i < c.numel(); ++i) {
+    EXPECT_FLOAT_EQ(c(i), 3.0f);
+  }
+}
+
+TEST(TensorElementWiseTest, TensorSubtraction) {
+  Tensor<float> a(Shape({2, 3}), 5.0f);
+  Tensor<float> b(Shape({2, 3}), 2.0f);
+  Tensor<float> c = a - b;
+  for (size_t i = 0; i < c.numel(); ++i) {
+    EXPECT_FLOAT_EQ(c(i), 3.0f);
+  }
+}
+
+TEST(TensorElementWiseTest, TensorMultiplication) {
+  Tensor<float> a(Shape({2, 3}), 3.0f);
+  Tensor<float> b(Shape({2, 3}), 4.0f);
+  Tensor<float> c = a * b;
+  for (size_t i = 0; i < c.numel(); ++i) {
+    EXPECT_FLOAT_EQ(c(i), 12.0f);
+  }
+}
+
+TEST(TensorElementWiseTest, TensorDivision) {
+  Tensor<float> a(Shape({2, 3}), 12.0f);
+  Tensor<float> b(Shape({2, 3}), 4.0f);
+  Tensor<float> c = a / b;
+  for (size_t i = 0; i < c.numel(); ++i) {
+    EXPECT_FLOAT_EQ(c(i), 3.0f);
+  }
+}
+
+TEST(TensorElementWiseTest, ScalarAddition) {
+  Tensor<float> a(Shape({2, 3}), 1.0f);
+  Tensor<float> b = a + 5.0f;
+  for (size_t i = 0; i < b.numel(); ++i) {
+    EXPECT_FLOAT_EQ(b(i), 6.0f);
+  }
+}
+
+TEST(TensorElementWiseTest, ScalarSubtraction) {
+  Tensor<float> a(Shape({2, 3}), 10.0f);
+  Tensor<float> b = a - 3.0f;
+  for (size_t i = 0; i < b.numel(); ++i) {
+    EXPECT_FLOAT_EQ(b(i), 7.0f);
+  }
+}
+
+TEST(TensorElementWiseTest, ScalarMultiplication) {
+  Tensor<float> a(Shape({2, 3}), 5.0f);
+  Tensor<float> b = a * 2.0f;
+  for (size_t i = 0; i < b.numel(); ++i) {
+    EXPECT_FLOAT_EQ(b(i), 10.0f);
+  }
+}
+
+TEST(TensorElementWiseTest, ScalarDivision) {
+  Tensor<float> a(Shape({2, 3}), 10.0f);
+  Tensor<float> b = a / 2.0f;
+  for (size_t i = 0; i < b.numel(); ++i) {
+    EXPECT_FLOAT_EQ(b(i), 5.0f);
+  }
+}
+
+TEST(TensorElementWiseTest, Negation) {
+  Tensor<float> a(Shape({2, 3}), 5.0f);
+  Tensor<float> b = a.neg();
+  for (size_t i = 0; i < b.numel(); ++i) {
+    EXPECT_FLOAT_EQ(b(i), -5.0f);
+  }
+}
+
+TEST(TensorElementWiseTest, MismatchedShapesThrows) {
+  Tensor<float> a(Shape({2, 3}));
+  Tensor<float> b(Shape({3, 2}));
+  EXPECT_THROW(a + b, std::runtime_error);
+}
+
+// In-place operations
+TEST(TensorInPlaceTest, InPlaceAddition) {
+  Tensor<float> a(Shape({2, 3}), 1.0f);
+  Tensor<float> b(Shape({2, 3}), 2.0f);
+  a += b;
+  for (size_t i = 0; i < a.numel(); ++i) {
+    EXPECT_FLOAT_EQ(a(i), 3.0f);
+  }
+}
+
+TEST(TensorInPlaceTest, InPlaceScalarAddition) {
+  Tensor<float> a(Shape({2, 3}), 1.0f);
+  a += 5.0f;
+  for (size_t i = 0; i < a.numel(); ++i) {
+    EXPECT_FLOAT_EQ(a(i), 6.0f);
+  }
+}
+
+TEST(TensorInPlaceTest, InPlaceSubtraction) {
+  Tensor<float> a(Shape({2, 3}), 5.0f);
+  Tensor<float> b(Shape({2, 3}), 2.0f);
+  a -= b;
+  for (size_t i = 0; i < a.numel(); ++i) {
+    EXPECT_FLOAT_EQ(a(i), 3.0f);
+  }
+}
+
+TEST(TensorInPlaceTest, InPlaceMultiplication) {
+  Tensor<float> a(Shape({2, 3}), 3.0f);
+  Tensor<float> b(Shape({2, 3}), 4.0f);
+  a *= b;
+  for (size_t i = 0; i < a.numel(); ++i) {
+    EXPECT_FLOAT_EQ(a(i), 12.0f);
+  }
+}
+
+TEST(TensorInPlaceTest, InPlaceDivision) {
+  Tensor<float> a(Shape({2, 3}), 12.0f);
+  Tensor<float> b(Shape({2, 3}), 4.0f);
+  a /= b;
+  for (size_t i = 0; i < a.numel(); ++i) {
+    EXPECT_FLOAT_EQ(a(i), 3.0f);
+  }
+}
+
+// Free function operators (scalar on left)
+TEST(TensorElementWiseTest, ScalarLeftAddition) {
+  Tensor<float> a(Shape({2, 3}), 1.0f);
+  Tensor<float> b = 5.0f + a;
+  for (size_t i = 0; i < b.numel(); ++i) {
+    EXPECT_FLOAT_EQ(b(i), 6.0f);
+  }
+}
+
+TEST(TensorElementWiseTest, ScalarLeftMultiplication) {
+  Tensor<float> a(Shape({2, 3}), 3.0f);
+  Tensor<float> b = 2.0f * a;
+  for (size_t i = 0; i < b.numel(); ++i) {
+    EXPECT_FLOAT_EQ(b(i), 6.0f);
+  }
+}
+
+// ============================================================================
+// Activation Function Tests
+// ============================================================================
+
+TEST(TensorActivationTest, ReLU) {
+  std::vector<float> data = {-2.0f, -1.0f, 0.0f, 1.0f, 2.0f, 3.0f};
+  Tensor<float> t(Shape({6}), data);
+  Tensor<float> result = t.relu();
+  EXPECT_FLOAT_EQ(result(0), 0.0f);
+  EXPECT_FLOAT_EQ(result(1), 0.0f);
+  EXPECT_FLOAT_EQ(result(2), 0.0f);
+  EXPECT_FLOAT_EQ(result(3), 1.0f);
+  EXPECT_FLOAT_EQ(result(4), 2.0f);
+  EXPECT_FLOAT_EQ(result(5), 3.0f);
+}
+
+TEST(TensorActivationTest, Sigmoid) {
+  Tensor<float> t(Shape({3}));
+  t(0) = 0.0f;
+  t(1) = 1.0f;
+  t(2) = -1.0f;
+  Tensor<float> result = t.sigmoid();
+  EXPECT_NEAR(result(0), 0.5f, kEpsilon);
+  EXPECT_NEAR(result(1), 0.7310586f, kEpsilon);
+  EXPECT_NEAR(result(2), 0.2689414f, kEpsilon);
+}
+
+TEST(TensorActivationTest, Tanh) {
+  Tensor<float> t(Shape({3}));
+  t(0) = 0.0f;
+  t(1) = 1.0f;
+  t(2) = -1.0f;
+  Tensor<float> result = t.tanh_();
+  EXPECT_NEAR(result(0), 0.0f, kEpsilon);
+  EXPECT_NEAR(result(1), std::tanh(1.0f), kEpsilon);
+  EXPECT_NEAR(result(2), std::tanh(-1.0f), kEpsilon);
+}
+
+TEST(TensorActivationTest, GELU) {
+  Tensor<float> t(Shape({3}));
+  t(0) = 0.0f;
+  t(1) = 1.0f;
+  t(2) = -1.0f;
+  Tensor<float> result = t.gelu();
+  // GELU(0) = 0
+  EXPECT_NEAR(result(0), 0.0f, kEpsilon);
+  // GELU(1) ≈ 0.8413
+  EXPECT_NEAR(result(1), 0.8413f, 0.01f);
+  // GELU(-1) ≈ -0.1587
+  EXPECT_NEAR(result(2), -0.1587f, 0.01f);
+}
+
+TEST(TensorActivationTest, SiLU) {
+  Tensor<float> t(Shape({3}));
+  t(0) = 0.0f;
+  t(1) = 1.0f;
+  t(2) = -1.0f;
+  Tensor<float> result = t.silu();
+  // SiLU(0) = 0
+  EXPECT_NEAR(result(0), 0.0f, kEpsilon);
+  // SiLU(x) = x * sigmoid(x)
+  EXPECT_NEAR(result(1), 1.0f * 0.7310586f, kEpsilon);
+  EXPECT_NEAR(result(2), -1.0f * 0.2689414f, kEpsilon);
+}
+
+// ============================================================================
+// Reduction Tests
+// ============================================================================
+
+TEST(TensorReductionTest, SumAll) {
+  std::vector<float> data = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+  Tensor<float> t(Shape({2, 3}), data);
+  float sum = t.sum();
+  EXPECT_FLOAT_EQ(sum, 21.0f);
+}
+
+TEST(TensorReductionTest, MeanAll) {
+  std::vector<float> data = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+  Tensor<float> t(Shape({2, 3}), data);
+  float mean = t.mean();
+  EXPECT_FLOAT_EQ(mean, 3.5f);
+}
+
+TEST(TensorReductionTest, MaxAll) {
+  std::vector<float> data = {1.0f, 5.0f, 3.0f, 4.0f, 2.0f, 6.0f};
+  Tensor<float> t(Shape({2, 3}), data);
+  float max = t.max();
+  EXPECT_FLOAT_EQ(max, 6.0f);
+}
+
+TEST(TensorReductionTest, MinAll) {
+  std::vector<float> data = {1.0f, 5.0f, 3.0f, 4.0f, 2.0f, 6.0f};
+  Tensor<float> t(Shape({2, 3}), data);
+  float min = t.min();
+  EXPECT_FLOAT_EQ(min, 1.0f);
+}
+
+TEST(TensorReductionTest, SumAlongDim) {
+  // [[1, 2, 3], [4, 5, 6]]
+  std::vector<float> data = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+  Tensor<float> t(Shape({2, 3}), data);
+
+  // Sum along dim 0: [5, 7, 9]
+  Tensor<float> sum0 = t.sum(0);
+  EXPECT_EQ(sum0.ndim(), 1u);
+  EXPECT_EQ(sum0.size(0), 3u);
+  EXPECT_FLOAT_EQ(sum0(0), 5.0f);
+  EXPECT_FLOAT_EQ(sum0(1), 7.0f);
+  EXPECT_FLOAT_EQ(sum0(2), 9.0f);
+
+  // Sum along dim 1: [6, 15]
+  Tensor<float> sum1 = t.sum(1);
+  EXPECT_EQ(sum1.ndim(), 1u);
+  EXPECT_EQ(sum1.size(0), 2u);
+  EXPECT_FLOAT_EQ(sum1(0), 6.0f);
+  EXPECT_FLOAT_EQ(sum1(1), 15.0f);
+}
+
+TEST(TensorReductionTest, SumAlongDimKeepdim) {
+  std::vector<float> data = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+  Tensor<float> t(Shape({2, 3}), data);
+
+  Tensor<float> sum0 = t.sum(0, true);
+  EXPECT_EQ(sum0.ndim(), 2u);
+  EXPECT_EQ(sum0.size(0), 1u);
+  EXPECT_EQ(sum0.size(1), 3u);
+}
+
+TEST(TensorReductionTest, MeanAlongDim) {
+  std::vector<float> data = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+  Tensor<float> t(Shape({2, 3}), data);
+
+  Tensor<float> mean1 = t.mean(1);
+  EXPECT_EQ(mean1.size(0), 2u);
+  EXPECT_FLOAT_EQ(mean1(0), 2.0f);
+  EXPECT_FLOAT_EQ(mean1(1), 5.0f);
+}
+
+TEST(TensorReductionTest, MaxAlongDim) {
+  std::vector<float> data = {1.0f, 5.0f, 3.0f, 4.0f, 2.0f, 6.0f};
+  Tensor<float> t(Shape({2, 3}), data);
+
+  Tensor<float> max1 = t.max(1);
+  EXPECT_EQ(max1.size(0), 2u);
+  EXPECT_FLOAT_EQ(max1(0), 5.0f);
+  EXPECT_FLOAT_EQ(max1(1), 6.0f);
+}
+
+TEST(TensorReductionTest, MinAlongDim) {
+  std::vector<float> data = {1.0f, 5.0f, 3.0f, 4.0f, 2.0f, 6.0f};
+  Tensor<float> t(Shape({2, 3}), data);
+
+  Tensor<float> min1 = t.min(1);
+  EXPECT_EQ(min1.size(0), 2u);
+  EXPECT_FLOAT_EQ(min1(0), 1.0f);
+  EXPECT_FLOAT_EQ(min1(1), 2.0f);
+}
+
+TEST(TensorReductionTest, ArgMax) {
+  std::vector<float> data = {1.0f, 5.0f, 3.0f, 4.0f, 2.0f, 6.0f};
+  Tensor<float> t(Shape({2, 3}), data);
+
+  Tensor<size_t> argmax1 = t.argmax(1);
+  EXPECT_EQ(argmax1.size(0), 2u);
+  EXPECT_EQ(argmax1(0), 1u);  // max at index 1 in first row
+  EXPECT_EQ(argmax1(1), 2u);  // max at index 2 in second row
+}
+
+TEST(TensorReductionTest, ArgMin) {
+  std::vector<float> data = {1.0f, 5.0f, 3.0f, 4.0f, 2.0f, 6.0f};
+  Tensor<float> t(Shape({2, 3}), data);
+
+  Tensor<size_t> argmin1 = t.argmin(1);
+  EXPECT_EQ(argmin1.size(0), 2u);
+  EXPECT_EQ(argmin1(0), 0u);  // min at index 0 in first row
+  EXPECT_EQ(argmin1(1), 1u);  // min at index 1 in second row
+}
+
+// ============================================================================
+// Matrix Multiplication Tests
+// ============================================================================
+
+TEST(TensorMatmulTest, Basic2DMatmul) {
+  // A: 2x3, B: 3x2
+  std::vector<float> a_data = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+  std::vector<float> b_data = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+  Tensor<float> a(Shape({2, 3}), a_data);
+  Tensor<float> b(Shape({3, 2}), b_data);
+
+  Tensor<float> c = a.matmul(b);
+  EXPECT_EQ(c.size(0), 2u);
+  EXPECT_EQ(c.size(1), 2u);
+
+  // c[0,0] = 1*1 + 2*3 + 3*5 = 22
+  EXPECT_FLOAT_EQ(c(0, 0), 22.0f);
+  // c[0,1] = 1*2 + 2*4 + 3*6 = 28
+  EXPECT_FLOAT_EQ(c(0, 1), 28.0f);
+  // c[1,0] = 4*1 + 5*3 + 6*5 = 49
+  EXPECT_FLOAT_EQ(c(1, 0), 49.0f);
+  // c[1,1] = 4*2 + 5*4 + 6*6 = 64
+  EXPECT_FLOAT_EQ(c(1, 1), 64.0f);
+}
+
+TEST(TensorMatmulTest, IdentityMatmul) {
+  std::vector<float> a_data = {1.0f, 2.0f, 3.0f, 4.0f};
+  std::vector<float> i_data = {1.0f, 0.0f, 0.0f, 1.0f};
+  Tensor<float> a(Shape({2, 2}), a_data);
+  Tensor<float> identity(Shape({2, 2}), i_data);
+
+  Tensor<float> c = a.matmul(identity);
+  for (size_t i = 0; i < 4; ++i) {
+    EXPECT_FLOAT_EQ(c(i), a_data[i]);
+  }
+}
+
+TEST(TensorMatmulTest, Batched3DMatmul) {
+  // Batch of 2 matrices: (2, 2, 3) x (2, 3, 2)
+  Tensor<float> a(Shape({2, 2, 3}), 1.0f);
+  Tensor<float> b(Shape({2, 3, 2}), 1.0f);
+
+  Tensor<float> c = a.matmul(b);
+  EXPECT_EQ(c.size(0), 2u);
+  EXPECT_EQ(c.size(1), 2u);
+  EXPECT_EQ(c.size(2), 2u);
+
+  // Each element should be 3.0 (sum of 3 ones)
+  for (size_t i = 0; i < c.numel(); ++i) {
+    EXPECT_FLOAT_EQ(c(i), 3.0f);
+  }
+}
+
+TEST(TensorMatmulTest, Batched4DMatmul) {
+  // (batch, heads, seq, dim) x (batch, heads, dim, k)
+  Tensor<float> a(Shape({2, 4, 3, 5}), 1.0f);
+  Tensor<float> b(Shape({2, 4, 5, 6}), 1.0f);
+
+  Tensor<float> c = a.matmul(b);
+  EXPECT_EQ(c.size(0), 2u);
+  EXPECT_EQ(c.size(1), 4u);
+  EXPECT_EQ(c.size(2), 3u);
+  EXPECT_EQ(c.size(3), 6u);
+
+  // Each element should be 5.0
+  for (size_t i = 0; i < c.numel(); ++i) {
+    EXPECT_FLOAT_EQ(c(i), 5.0f);
+  }
+}
+
+TEST(TensorMatmulTest, DimensionMismatchThrows) {
+  Tensor<float> a(Shape({2, 3}));
+  Tensor<float> b(Shape({4, 2}));
+  EXPECT_THROW(a.matmul(b), std::runtime_error);
+}
+
+// ============================================================================
+// Normalization Tests
+// ============================================================================
+
+TEST(TensorNormalizationTest, Softmax) {
+  std::vector<float> data = {1.0f, 2.0f, 3.0f};
+  Tensor<float> t(Shape({3}), data);
+  Tensor<float> result = t.softmax(0);
+
+  // Sum should be 1
+  float sum = result.sum();
+  EXPECT_NEAR(sum, 1.0f, kEpsilon);
+
+  // Values should be in ascending order
+  EXPECT_LT(result(0), result(1));
+  EXPECT_LT(result(1), result(2));
+}
+
+TEST(TensorNormalizationTest, Softmax2D) {
+  std::vector<float> data = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+  Tensor<float> t(Shape({2, 3}), data);
+
+  // Softmax along dim 1 (each row sums to 1)
+  Tensor<float> result = t.softmax(1);
+
+  // Check each row sums to 1
+  float row0_sum = result(0, 0) + result(0, 1) + result(0, 2);
+  float row1_sum = result(1, 0) + result(1, 1) + result(1, 2);
+  EXPECT_NEAR(row0_sum, 1.0f, kEpsilon);
+  EXPECT_NEAR(row1_sum, 1.0f, kEpsilon);
+}
+
+TEST(TensorNormalizationTest, LayerNorm) {
+  std::vector<float> data = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+  Tensor<float> t(Shape({2, 3}), data);
+
+  Tensor<float> weight(Shape({3}), 1.0f);
+  Tensor<float> bias(Shape({3}), 0.0f);
+
+  Tensor<float> result = t.layer_norm(weight, bias);
+
+  // After layer norm with gamma=1, beta=0:
+  // Each row should have mean ≈ 0 and std ≈ 1
+  float row0_mean = (result(0, 0) + result(0, 1) + result(0, 2)) / 3.0f;
+  float row1_mean = (result(1, 0) + result(1, 1) + result(1, 2)) / 3.0f;
+  EXPECT_NEAR(row0_mean, 0.0f, 0.01f);
+  EXPECT_NEAR(row1_mean, 0.0f, 0.01f);
+}
+
+TEST(TensorNormalizationTest, RMSNorm) {
+  std::vector<float> data = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+  Tensor<float> t(Shape({2, 3}), data);
+
+  Tensor<float> weight(Shape({3}), 1.0f);
+
+  Tensor<float> result = t.rms_norm(weight);
+
+  // RMS norm should normalize by sqrt(mean(x^2))
+  // Result values should be scaled versions of original
+  EXPECT_GT(result(0, 0), 0.0f);  // Same sign as input
+  EXPECT_GT(result(1, 2), 0.0f);
+}
+
+// ============================================================================
+// Utility Function Tests
+// ============================================================================
+
+TEST(TensorUtilityTest, Fill) {
+  Tensor<float> t(Shape({2, 3}));
+  t.fill(7.0f);
+  for (size_t i = 0; i < t.numel(); ++i) {
+    EXPECT_FLOAT_EQ(t(i), 7.0f);
+  }
+}
+
+TEST(TensorUtilityTest, Clone) {
+  Tensor<float> t(Shape({2, 3}), 5.0f);
+  Tensor<float> c = t.clone();
+
+  // Same values
+  for (size_t i = 0; i < t.numel(); ++i) {
+    EXPECT_FLOAT_EQ(c(i), t(i));
+  }
+
+  // Modifying clone doesn't affect original
+  c(0) = 100.0f;
+  EXPECT_FLOAT_EQ(t(0), 5.0f);
+}
+
+TEST(TensorUtilityTest, Zeros) {
+  Tensor<float> t = Tensor<float>::zeros(Shape({3, 4}));
+  EXPECT_EQ(t.numel(), 12u);
+  for (size_t i = 0; i < t.numel(); ++i) {
+    EXPECT_FLOAT_EQ(t(i), 0.0f);
+  }
+}
+
+TEST(TensorUtilityTest, Ones) {
+  Tensor<float> t = Tensor<float>::ones(Shape({3, 4}));
+  EXPECT_EQ(t.numel(), 12u);
+  for (size_t i = 0; i < t.numel(); ++i) {
+    EXPECT_FLOAT_EQ(t(i), 1.0f);
+  }
+}
+
+TEST(TensorUtilityTest, Full) {
+  Tensor<float> t = Tensor<float>::full(Shape({2, 3}), 42.0f);
+  for (size_t i = 0; i < t.numel(); ++i) {
+    EXPECT_FLOAT_EQ(t(i), 42.0f);
+  }
+}
+
+TEST(TensorUtilityTest, Apply) {
+  std::vector<float> data = {1.0f, 4.0f, 9.0f, 16.0f};
+  Tensor<float> t(Shape({4}), data);
+  Tensor<float> result = t.apply([](float x) { return std::sqrt(x); });
+
+  EXPECT_FLOAT_EQ(result(0), 1.0f);
+  EXPECT_FLOAT_EQ(result(1), 2.0f);
+  EXPECT_FLOAT_EQ(result(2), 3.0f);
+  EXPECT_FLOAT_EQ(result(3), 4.0f);
+}
+
+// ============================================================================
+// Integer Tensor Tests
+// ============================================================================
+
+TEST(TensorIntTest, BasicOperations) {
+  Tensor<int> a(Shape({2, 3}), 5);
+  Tensor<int> b(Shape({2, 3}), 3);
+
+  Tensor<int> sum = a + b;
+  Tensor<int> diff = a - b;
+  Tensor<int> prod = a * b;
+  Tensor<int> quot = a / b;
+
+  for (size_t i = 0; i < sum.numel(); ++i) {
+    EXPECT_EQ(sum(i), 8);
+    EXPECT_EQ(diff(i), 2);
+    EXPECT_EQ(prod(i), 15);
+    EXPECT_EQ(quot(i), 1);  // Integer division
+  }
+}
+
+TEST(TensorIntTest, Reductions) {
+  std::vector<int> data = {1, 2, 3, 4, 5, 6};
+  Tensor<int> t(Shape({6}), data);
+
+  EXPECT_EQ(t.sum(), 21);
+  EXPECT_EQ(t.max(), 6);
+  EXPECT_EQ(t.min(), 1);
+}
+
+// ============================================================================
+// Double Precision Tests
+// ============================================================================
+
+TEST(TensorDoubleTest, BasicOperations) {
+  Tensor<double> a(Shape({2, 3}), 1.5);
+  Tensor<double> b(Shape({2, 3}), 2.5);
+
+  Tensor<double> sum = a + b;
+  for (size_t i = 0; i < sum.numel(); ++i) {
+    EXPECT_DOUBLE_EQ(sum(i), 4.0);
+  }
+}
+
+TEST(TensorDoubleTest, ActivationFunctions) {
+  Tensor<double> t(Shape({3}));
+  t(0) = 0.0;
+  t(1) = 1.0;
+  t(2) = -1.0;
+
+  Tensor<double> sig = t.sigmoid();
+  EXPECT_NEAR(sig(0), 0.5, 1e-10);
+}
+
+// ============================================================================
+// Edge Cases
+// ============================================================================
+
+TEST(TensorEdgeCaseTest, SingleElementTensor) {
+  Tensor<float> t(Shape({1}), 42.0f);
+  EXPECT_FLOAT_EQ(t.sum(), 42.0f);
+  EXPECT_FLOAT_EQ(t.mean(), 42.0f);
+  EXPECT_FLOAT_EQ(t.max(), 42.0f);
+  EXPECT_FLOAT_EQ(t.min(), 42.0f);
+}
+
+TEST(TensorEdgeCaseTest, LargeTensor) {
+  Tensor<float> t(Shape({100, 100}), 1.0f);
+  EXPECT_FLOAT_EQ(t.sum(), 10000.0f);
+  EXPECT_FLOAT_EQ(t.mean(), 1.0f);
+}
+
+TEST(TensorEdgeCaseTest, HighDimensionalTensor) {
+  Tensor<float> t(Shape({2, 3, 4, 5, 6}));
+  EXPECT_EQ(t.numel(), 720u);
+  EXPECT_EQ(t.ndim(), 5u);
+}
+
+// ============================================================================
+// Broadcasting Tests
+// ============================================================================
+
+TEST(BroadcastingTest, CanBroadcastSameShape) {
+  Shape a({2, 3, 4});
+  Shape b({2, 3, 4});
+  EXPECT_TRUE(Shape::can_broadcast(a, b));
+}
+
+TEST(BroadcastingTest, CanBroadcastScalar) {
+  Shape a({2, 3, 4});
+  Shape b({1});
+  EXPECT_TRUE(Shape::can_broadcast(a, b));
+}
+
+TEST(BroadcastingTest, CanBroadcastTrailingDims) {
+  Shape a({2, 3, 4});
+  Shape b({4});
+  EXPECT_TRUE(Shape::can_broadcast(a, b));
+}
+
+TEST(BroadcastingTest, CanBroadcastMiddleDim) {
+  Shape a({2, 3, 4});
+  Shape b({1, 3, 1});
+  EXPECT_TRUE(Shape::can_broadcast(a, b));
+}
+
+TEST(BroadcastingTest, CanBroadcastDifferentNdim) {
+  Shape a({3, 4});
+  Shape b({2, 3, 4});
+  EXPECT_TRUE(Shape::can_broadcast(a, b));
+}
+
+TEST(BroadcastingTest, CannotBroadcastIncompatible) {
+  Shape a({2, 3});
+  Shape b({4, 3});
+  EXPECT_FALSE(Shape::can_broadcast(a, b));
+}
+
+TEST(BroadcastingTest, BroadcastShapeSame) {
+  Shape a({2, 3, 4});
+  Shape b({2, 3, 4});
+  Shape result = Shape::broadcast_shape(a, b);
+  EXPECT_EQ(result[0], 2u);
+  EXPECT_EQ(result[1], 3u);
+  EXPECT_EQ(result[2], 4u);
+}
+
+TEST(BroadcastingTest, BroadcastShapeExpand) {
+  Shape a({2, 1, 4});
+  Shape b({1, 3, 4});
+  Shape result = Shape::broadcast_shape(a, b);
+  EXPECT_EQ(result[0], 2u);
+  EXPECT_EQ(result[1], 3u);
+  EXPECT_EQ(result[2], 4u);
+}
+
+TEST(BroadcastingTest, BroadcastShapeDifferentNdim) {
+  Shape a({4});
+  Shape b({2, 3, 4});
+  Shape result = Shape::broadcast_shape(a, b);
+  EXPECT_EQ(result.ndim(), 3u);
+  EXPECT_EQ(result[0], 2u);
+  EXPECT_EQ(result[1], 3u);
+  EXPECT_EQ(result[2], 4u);
+}
+
+TEST(BroadcastingTest, AddScalarBroadcast) {
+  // (2, 3) + (1,) -> (2, 3)
+  Tensor<float> a(Shape({2, 3}), 2.0f);
+  Tensor<float> b(Shape({1}), 3.0f);
+  Tensor<float> result = a + b;
+
+  EXPECT_EQ(result.shape()[0], 2u);
+  EXPECT_EQ(result.shape()[1], 3u);
+  for (size_t i = 0; i < result.numel(); ++i) {
+    EXPECT_FLOAT_EQ(result(i), 5.0f);
+  }
+}
+
+TEST(BroadcastingTest, AddRowBroadcast) {
+  // (2, 3) + (3,) -> (2, 3)
+  std::vector<float> a_data = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+  std::vector<float> b_data = {10.0f, 20.0f, 30.0f};
+  Tensor<float> a(Shape({2, 3}), a_data);
+  Tensor<float> b(Shape({3}), b_data);
+  Tensor<float> result = a + b;
+
+  EXPECT_EQ(result.shape()[0], 2u);
+  EXPECT_EQ(result.shape()[1], 3u);
+  EXPECT_FLOAT_EQ(result(0, 0), 11.0f);
+  EXPECT_FLOAT_EQ(result(0, 1), 22.0f);
+  EXPECT_FLOAT_EQ(result(0, 2), 33.0f);
+  EXPECT_FLOAT_EQ(result(1, 0), 14.0f);
+  EXPECT_FLOAT_EQ(result(1, 1), 25.0f);
+  EXPECT_FLOAT_EQ(result(1, 2), 36.0f);
+}
+
+TEST(BroadcastingTest, AddColumnBroadcast) {
+  // (2, 3) + (2, 1) -> (2, 3)
+  std::vector<float> a_data = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+  std::vector<float> b_data = {10.0f, 20.0f};
+  Tensor<float> a(Shape({2, 3}), a_data);
+  Tensor<float> b(Shape({2, 1}), b_data);
+  Tensor<float> result = a + b;
+
+  EXPECT_EQ(result.shape()[0], 2u);
+  EXPECT_EQ(result.shape()[1], 3u);
+  EXPECT_FLOAT_EQ(result(0, 0), 11.0f);
+  EXPECT_FLOAT_EQ(result(0, 1), 12.0f);
+  EXPECT_FLOAT_EQ(result(0, 2), 13.0f);
+  EXPECT_FLOAT_EQ(result(1, 0), 24.0f);
+  EXPECT_FLOAT_EQ(result(1, 1), 25.0f);
+  EXPECT_FLOAT_EQ(result(1, 2), 26.0f);
+}
+
+TEST(BroadcastingTest, AddExpandBothDims) {
+  // (2, 1) + (1, 3) -> (2, 3)
+  std::vector<float> a_data = {1.0f, 2.0f};
+  std::vector<float> b_data = {10.0f, 20.0f, 30.0f};
+  Tensor<float> a(Shape({2, 1}), a_data);
+  Tensor<float> b(Shape({1, 3}), b_data);
+  Tensor<float> result = a + b;
+
+  EXPECT_EQ(result.shape()[0], 2u);
+  EXPECT_EQ(result.shape()[1], 3u);
+  EXPECT_FLOAT_EQ(result(0, 0), 11.0f);
+  EXPECT_FLOAT_EQ(result(0, 1), 21.0f);
+  EXPECT_FLOAT_EQ(result(0, 2), 31.0f);
+  EXPECT_FLOAT_EQ(result(1, 0), 12.0f);
+  EXPECT_FLOAT_EQ(result(1, 1), 22.0f);
+  EXPECT_FLOAT_EQ(result(1, 2), 32.0f);
+}
+
+TEST(BroadcastingTest, SubBroadcast) {
+  Tensor<float> a(Shape({2, 3}), 10.0f);
+  Tensor<float> b(Shape({3}), 1.0f);
+  Tensor<float> result = a - b;
+
+  for (size_t i = 0; i < result.numel(); ++i) {
+    EXPECT_FLOAT_EQ(result(i), 9.0f);
+  }
+}
+
+TEST(BroadcastingTest, MulBroadcast) {
+  std::vector<float> a_data = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+  std::vector<float> b_data = {2.0f, 3.0f, 4.0f};
+  Tensor<float> a(Shape({2, 3}), a_data);
+  Tensor<float> b(Shape({3}), b_data);
+  Tensor<float> result = a * b;
+
+  EXPECT_FLOAT_EQ(result(0, 0), 2.0f);
+  EXPECT_FLOAT_EQ(result(0, 1), 6.0f);
+  EXPECT_FLOAT_EQ(result(0, 2), 12.0f);
+  EXPECT_FLOAT_EQ(result(1, 0), 8.0f);
+  EXPECT_FLOAT_EQ(result(1, 1), 15.0f);
+  EXPECT_FLOAT_EQ(result(1, 2), 24.0f);
+}
+
+TEST(BroadcastingTest, DivBroadcast) {
+  Tensor<float> a(Shape({2, 3}), 12.0f);
+  std::vector<float> b_data = {1.0f, 2.0f, 3.0f};
+  Tensor<float> b(Shape({3}), b_data);
+  Tensor<float> result = a / b;
+
+  EXPECT_FLOAT_EQ(result(0, 0), 12.0f);
+  EXPECT_FLOAT_EQ(result(0, 1), 6.0f);
+  EXPECT_FLOAT_EQ(result(0, 2), 4.0f);
+  EXPECT_FLOAT_EQ(result(1, 0), 12.0f);
+  EXPECT_FLOAT_EQ(result(1, 1), 6.0f);
+  EXPECT_FLOAT_EQ(result(1, 2), 4.0f);
+}
+
+TEST(BroadcastingTest, Broadcast3D) {
+  // (2, 3, 4) + (4,) -> (2, 3, 4)
+  Tensor<float> a(Shape({2, 3, 4}), 1.0f);
+  std::vector<float> b_data = {1.0f, 2.0f, 3.0f, 4.0f};
+  Tensor<float> b(Shape({4}), b_data);
+  Tensor<float> result = a + b;
+
+  EXPECT_EQ(result.ndim(), 3u);
+  EXPECT_EQ(result.shape()[0], 2u);
+  EXPECT_EQ(result.shape()[1], 3u);
+  EXPECT_EQ(result.shape()[2], 4u);
+
+  // Check a few values
+  EXPECT_FLOAT_EQ(result(0, 0, 0), 2.0f);
+  EXPECT_FLOAT_EQ(result(0, 0, 1), 3.0f);
+  EXPECT_FLOAT_EQ(result(0, 0, 2), 4.0f);
+  EXPECT_FLOAT_EQ(result(0, 0, 3), 5.0f);
+}
+
+TEST(BroadcastingTest, Broadcast4DBatchHeads) {
+  // Simulating attention mask broadcast: (batch, heads, seq, seq) + (1, 1, seq, seq)
+  Tensor<float> a(Shape({2, 4, 3, 3}), 1.0f);
+  Tensor<float> mask(Shape({1, 1, 3, 3}), 0.5f);
+  Tensor<float> result = a + mask;
+
+  EXPECT_EQ(result.shape()[0], 2u);
+  EXPECT_EQ(result.shape()[1], 4u);
+  EXPECT_EQ(result.shape()[2], 3u);
+  EXPECT_EQ(result.shape()[3], 3u);
+
+  for (size_t i = 0; i < result.numel(); ++i) {
+    EXPECT_FLOAT_EQ(result(i), 1.5f);
+  }
+}
+
+TEST(BroadcastingTest, BroadcastBias) {
+  // Simulating bias addition: (batch, seq, hidden) + (hidden,)
+  Tensor<float> a(Shape({2, 5, 8}), 1.0f);
+  Tensor<float> bias(Shape({8}), 0.1f);
+  Tensor<float> result = a + bias;
+
+  EXPECT_EQ(result.shape()[0], 2u);
+  EXPECT_EQ(result.shape()[1], 5u);
+  EXPECT_EQ(result.shape()[2], 8u);
+
+  for (size_t i = 0; i < result.numel(); ++i) {
+    EXPECT_FLOAT_EQ(result(i), 1.1f);
+  }
+}
+
+TEST(BroadcastingTest, IncompatibleShapesThrow) {
+  Tensor<float> a(Shape({2, 3}));
+  Tensor<float> b(Shape({4, 3}));
+  EXPECT_THROW(a + b, std::runtime_error);
+}
+
+TEST(BroadcastingTest, SameShapeFastPath) {
+  // Test that same-shape operations still work (fast path)
+  Tensor<float> a(Shape({2, 3}), 1.0f);
+  Tensor<float> b(Shape({2, 3}), 2.0f);
+  Tensor<float> result = a + b;
+
+  EXPECT_EQ(result.shape()[0], 2u);
+  EXPECT_EQ(result.shape()[1], 3u);
+  for (size_t i = 0; i < result.numel(); ++i) {
+    EXPECT_FLOAT_EQ(result(i), 3.0f);
+  }
+}
+
+// ============================================================================
+// Broadcast Matmul Tests (for GQA support)
+// ============================================================================
+
+TEST(BroadcastMatmulTest, Matmul3DBatchBroadcast) {
+  // (1, 2, 3) x (4, 3, 2) -> (4, 2, 2) - broadcast batch dim
+  Tensor<float> a(Shape({1, 2, 3}), 1.0f);
+  Tensor<float> b(Shape({4, 3, 2}), 1.0f);
+  Tensor<float> result = a.matmul(b);
+
+  EXPECT_EQ(result.shape()[0], 4u);
+  EXPECT_EQ(result.shape()[1], 2u);
+  EXPECT_EQ(result.shape()[2], 2u);
+
+  // Each element should be sum of 3 ones = 3.0
+  for (size_t i = 0; i < result.numel(); ++i) {
+    EXPECT_FLOAT_EQ(result(i), 3.0f);
+  }
+}
+
+TEST(BroadcastMatmulTest, Matmul3DBatchBroadcastReverse) {
+  // (4, 2, 3) x (1, 3, 2) -> (4, 2, 2) - broadcast batch dim (reverse)
+  Tensor<float> a(Shape({4, 2, 3}), 1.0f);
+  Tensor<float> b(Shape({1, 3, 2}), 1.0f);
+  Tensor<float> result = a.matmul(b);
+
+  EXPECT_EQ(result.shape()[0], 4u);
+  EXPECT_EQ(result.shape()[1], 2u);
+  EXPECT_EQ(result.shape()[2], 2u);
+
+  for (size_t i = 0; i < result.numel(); ++i) {
+    EXPECT_FLOAT_EQ(result(i), 3.0f);
+  }
+}
+
+TEST(BroadcastMatmulTest, Matmul4DSameHeads) {
+  // Standard case: same batch and heads
+  // (2, 4, 3, 5) x (2, 4, 5, 2) -> (2, 4, 3, 2)
+  Tensor<float> a(Shape({2, 4, 3, 5}), 1.0f);
+  Tensor<float> b(Shape({2, 4, 5, 2}), 1.0f);
+  Tensor<float> result = a.matmul(b);
+
+  EXPECT_EQ(result.shape()[0], 2u);
+  EXPECT_EQ(result.shape()[1], 4u);
+  EXPECT_EQ(result.shape()[2], 3u);
+  EXPECT_EQ(result.shape()[3], 2u);
+
+  for (size_t i = 0; i < result.numel(); ++i) {
+    EXPECT_FLOAT_EQ(result(i), 5.0f);
+  }
+}
+
+TEST(BroadcastMatmulTest, Matmul4DGQABasic) {
+  // GQA: 4 query heads, 2 KV heads (4 % 2 == 0)
+  // (1, 4, 2, 3) x (1, 2, 3, 2) -> (1, 4, 2, 2)
+  // Heads 0,1 use KV head 0; Heads 2,3 use KV head 1
+  Tensor<float> q(Shape({1, 4, 2, 3}), 1.0f);
+
+  // Create KV with different values per head so we can verify mapping
+  std::vector<float> kv_data(1 * 2 * 3 * 2, 0.0f);
+  // Head 0: fill with 1.0
+  for (size_t i = 0; i < 3 * 2; ++i) kv_data[i] = 1.0f;
+  // Head 1: fill with 2.0
+  for (size_t i = 3 * 2; i < 2 * 3 * 2; ++i) kv_data[i] = 2.0f;
+  Tensor<float> kv(Shape({1, 2, 3, 2}), kv_data);
+
+  Tensor<float> result = q.matmul(kv);
+
+  EXPECT_EQ(result.shape()[0], 1u);
+  EXPECT_EQ(result.shape()[1], 4u);
+  EXPECT_EQ(result.shape()[2], 2u);
+  EXPECT_EQ(result.shape()[3], 2u);
+
+  // Heads 0,1 should use KV head 0 (values 1.0) -> result = 3.0
+  // Heads 2,3 should use KV head 1 (values 2.0) -> result = 6.0
+  EXPECT_FLOAT_EQ(result(0, 0, 0, 0), 3.0f);
+  EXPECT_FLOAT_EQ(result(0, 1, 0, 0), 3.0f);
+  EXPECT_FLOAT_EQ(result(0, 2, 0, 0), 6.0f);
+  EXPECT_FLOAT_EQ(result(0, 3, 0, 0), 6.0f);
+}
+
+TEST(BroadcastMatmulTest, Matmul4DGQAQwen3Config) {
+  // Qwen3-4B config: 32 query heads, 8 KV heads
+  // (batch=1, 32 heads, seq=2, head_dim=4) x (batch=1, 8 heads, head_dim=4, seq=2)
+  Tensor<float> q(Shape({1, 32, 2, 4}), 1.0f);
+  Tensor<float> k(Shape({1, 8, 4, 2}), 1.0f);
+
+  Tensor<float> result = q.matmul(k);
+
+  EXPECT_EQ(result.shape()[0], 1u);
+  EXPECT_EQ(result.shape()[1], 32u);
+  EXPECT_EQ(result.shape()[2], 2u);
+  EXPECT_EQ(result.shape()[3], 2u);
+
+  // Each result element = sum of 4 ones = 4.0
+  for (size_t i = 0; i < result.numel(); ++i) {
+    EXPECT_FLOAT_EQ(result(i), 4.0f);
+  }
+}
+
+TEST(BroadcastMatmulTest, Matmul4DGQAHeadMapping) {
+  // Test that head mapping is correct for GQA
+  // 8 query heads, 2 KV heads -> 4 query heads per KV head
+  Tensor<float> q(Shape({1, 8, 1, 2}), 1.0f);
+
+  // KV head 0: value 1.0, KV head 1: value 3.0
+  std::vector<float> kv_data = {
+      1.0f, 1.0f,  // head 0
+      3.0f, 3.0f   // head 1
+  };
+  Tensor<float> kv(Shape({1, 2, 2, 1}), kv_data);
+
+  Tensor<float> result = q.matmul(kv);
+
+  EXPECT_EQ(result.shape()[0], 1u);
+  EXPECT_EQ(result.shape()[1], 8u);
+  EXPECT_EQ(result.shape()[2], 1u);
+  EXPECT_EQ(result.shape()[3], 1u);
+
+  // Q heads 0-3 use KV head 0 -> 1+1 = 2
+  // Q heads 4-7 use KV head 1 -> 3+3 = 6
+  EXPECT_FLOAT_EQ(result(0, 0, 0, 0), 2.0f);
+  EXPECT_FLOAT_EQ(result(0, 1, 0, 0), 2.0f);
+  EXPECT_FLOAT_EQ(result(0, 2, 0, 0), 2.0f);
+  EXPECT_FLOAT_EQ(result(0, 3, 0, 0), 2.0f);
+  EXPECT_FLOAT_EQ(result(0, 4, 0, 0), 6.0f);
+  EXPECT_FLOAT_EQ(result(0, 5, 0, 0), 6.0f);
+  EXPECT_FLOAT_EQ(result(0, 6, 0, 0), 6.0f);
+  EXPECT_FLOAT_EQ(result(0, 7, 0, 0), 6.0f);
+}
+
+TEST(BroadcastMatmulTest, Matmul4DBatchBroadcast) {
+  // Broadcast batch dimension in 4D matmul
+  // (1, 2, 2, 3) x (4, 2, 3, 2) -> (4, 2, 2, 2)
+  Tensor<float> a(Shape({1, 2, 2, 3}), 1.0f);
+  Tensor<float> b(Shape({4, 2, 3, 2}), 1.0f);
+  Tensor<float> result = a.matmul(b);
+
+  EXPECT_EQ(result.shape()[0], 4u);
+  EXPECT_EQ(result.shape()[1], 2u);
+  EXPECT_EQ(result.shape()[2], 2u);
+  EXPECT_EQ(result.shape()[3], 2u);
+
+  for (size_t i = 0; i < result.numel(); ++i) {
+    EXPECT_FLOAT_EQ(result(i), 3.0f);
+  }
+}
+
+TEST(BroadcastMatmulTest, Matmul4DHeadBroadcastSingle) {
+  // Single head broadcasts to all
+  // (2, 4, 2, 3) x (2, 1, 3, 2) -> (2, 4, 2, 2)
+  Tensor<float> a(Shape({2, 4, 2, 3}), 1.0f);
+  Tensor<float> b(Shape({2, 1, 3, 2}), 2.0f);
+  Tensor<float> result = a.matmul(b);
+
+  EXPECT_EQ(result.shape()[0], 2u);
+  EXPECT_EQ(result.shape()[1], 4u);
+  EXPECT_EQ(result.shape()[2], 2u);
+  EXPECT_EQ(result.shape()[3], 2u);
+
+  // 3 * (1*2) = 6.0
+  for (size_t i = 0; i < result.numel(); ++i) {
+    EXPECT_FLOAT_EQ(result(i), 6.0f);
+  }
+}
+
+TEST(BroadcastMatmulTest, Matmul4DIncompatibleHeadsThrows) {
+  // 5 query heads, 3 KV heads - not divisible
+  Tensor<float> q(Shape({1, 5, 2, 3}));
+  Tensor<float> kv(Shape({1, 3, 3, 2}));
+
+  EXPECT_THROW(q.matmul(kv), std::runtime_error);
+}
+
+TEST(BroadcastMatmulTest, Matmul3DIncompatibleBatchThrows) {
+  // Batch 2 and batch 3 are not broadcastable
+  Tensor<float> a(Shape({2, 2, 3}));
+  Tensor<float> b(Shape({3, 3, 2}));
+
+  EXPECT_THROW(a.matmul(b), std::runtime_error);
+}
+
+TEST(BroadcastMatmulTest, Matmul4DIncompatibleBatchThrows) {
+  // Batch 2 and batch 3 are not broadcastable
+  Tensor<float> a(Shape({2, 4, 2, 3}));
+  Tensor<float> b(Shape({3, 4, 3, 2}));
+
+  EXPECT_THROW(a.matmul(b), std::runtime_error);
+}
+
+// ============================================================================
+// Concat Tests
+// ============================================================================
+
+TEST(ConcatTest, Concat1DBasic) {
+  Tensor<float> a(Shape({3}), std::vector<float>{1.0f, 2.0f, 3.0f});
+  Tensor<float> b(Shape({2}), std::vector<float>{4.0f, 5.0f});
+
+  Tensor<float> result = Tensor<float>::concat({a, b}, 0);
+
+  EXPECT_EQ(result.shape()[0], 5u);
+  EXPECT_FLOAT_EQ(result(0), 1.0f);
+  EXPECT_FLOAT_EQ(result(1), 2.0f);
+  EXPECT_FLOAT_EQ(result(2), 3.0f);
+  EXPECT_FLOAT_EQ(result(3), 4.0f);
+  EXPECT_FLOAT_EQ(result(4), 5.0f);
+}
+
+TEST(ConcatTest, Concat2DDim0) {
+  // Concat along rows (dim 0)
+  Tensor<float> a(Shape({2, 3}), std::vector<float>{1, 2, 3, 4, 5, 6});
+  Tensor<float> b(Shape({1, 3}), std::vector<float>{7, 8, 9});
+
+  Tensor<float> result = Tensor<float>::concat({a, b}, 0);
+
+  EXPECT_EQ(result.shape()[0], 3u);
+  EXPECT_EQ(result.shape()[1], 3u);
+
+  // Row 0: 1, 2, 3
+  EXPECT_FLOAT_EQ(result(0, 0), 1.0f);
+  EXPECT_FLOAT_EQ(result(0, 1), 2.0f);
+  EXPECT_FLOAT_EQ(result(0, 2), 3.0f);
+  // Row 1: 4, 5, 6
+  EXPECT_FLOAT_EQ(result(1, 0), 4.0f);
+  EXPECT_FLOAT_EQ(result(1, 1), 5.0f);
+  EXPECT_FLOAT_EQ(result(1, 2), 6.0f);
+  // Row 2: 7, 8, 9
+  EXPECT_FLOAT_EQ(result(2, 0), 7.0f);
+  EXPECT_FLOAT_EQ(result(2, 1), 8.0f);
+  EXPECT_FLOAT_EQ(result(2, 2), 9.0f);
+}
+
+TEST(ConcatTest, Concat2DDim1) {
+  // Concat along columns (dim 1)
+  Tensor<float> a(Shape({2, 2}), std::vector<float>{1, 2, 3, 4});
+  Tensor<float> b(Shape({2, 3}), std::vector<float>{5, 6, 7, 8, 9, 10});
+
+  Tensor<float> result = Tensor<float>::concat({a, b}, 1);
+
+  EXPECT_EQ(result.shape()[0], 2u);
+  EXPECT_EQ(result.shape()[1], 5u);
+
+  // Row 0: 1, 2, 5, 6, 7
+  EXPECT_FLOAT_EQ(result(0, 0), 1.0f);
+  EXPECT_FLOAT_EQ(result(0, 1), 2.0f);
+  EXPECT_FLOAT_EQ(result(0, 2), 5.0f);
+  EXPECT_FLOAT_EQ(result(0, 3), 6.0f);
+  EXPECT_FLOAT_EQ(result(0, 4), 7.0f);
+  // Row 1: 3, 4, 8, 9, 10
+  EXPECT_FLOAT_EQ(result(1, 0), 3.0f);
+  EXPECT_FLOAT_EQ(result(1, 1), 4.0f);
+  EXPECT_FLOAT_EQ(result(1, 2), 8.0f);
+  EXPECT_FLOAT_EQ(result(1, 3), 9.0f);
+  EXPECT_FLOAT_EQ(result(1, 4), 10.0f);
+}
+
+TEST(ConcatTest, Concat3DSeqDim) {
+  // Simulating KV cache concat: (batch, heads, seq, dim)
+  // Concat along sequence dimension (dim 2 in 4D, but testing 3D here)
+  Tensor<float> cached(Shape({2, 3, 4}), 1.0f);  // batch=2, seq=3, dim=4
+  Tensor<float> new_kv(Shape({2, 1, 4}), 2.0f);  // new token
+
+  Tensor<float> result = Tensor<float>::concat({cached, new_kv}, 1);
+
+  EXPECT_EQ(result.shape()[0], 2u);
+  EXPECT_EQ(result.shape()[1], 4u);  // 3 + 1 = 4
+  EXPECT_EQ(result.shape()[2], 4u);
+
+  // Check cached values
+  EXPECT_FLOAT_EQ(result(0, 0, 0), 1.0f);
+  EXPECT_FLOAT_EQ(result(0, 2, 3), 1.0f);
+
+  // Check new values at seq position 3
+  EXPECT_FLOAT_EQ(result(0, 3, 0), 2.0f);
+  EXPECT_FLOAT_EQ(result(1, 3, 3), 2.0f);
+}
+
+TEST(ConcatTest, Concat4DKVCache) {
+  // Full KV cache scenario: (batch, num_kv_heads, seq, head_dim)
+  Tensor<float> cached_k(Shape({1, 8, 5, 64}), 1.0f);  // 5 cached tokens
+  Tensor<float> new_k(Shape({1, 8, 1, 64}), 2.0f);     // 1 new token
+
+  Tensor<float> result = Tensor<float>::concat({cached_k, new_k}, 2);
+
+  EXPECT_EQ(result.shape()[0], 1u);
+  EXPECT_EQ(result.shape()[1], 8u);
+  EXPECT_EQ(result.shape()[2], 6u);  // 5 + 1 = 6
+  EXPECT_EQ(result.shape()[3], 64u);
+
+  // Verify cached tokens preserved
+  EXPECT_FLOAT_EQ(result(0, 0, 0, 0), 1.0f);
+  EXPECT_FLOAT_EQ(result(0, 7, 4, 63), 1.0f);
+
+  // Verify new token added
+  EXPECT_FLOAT_EQ(result(0, 0, 5, 0), 2.0f);
+  EXPECT_FLOAT_EQ(result(0, 7, 5, 63), 2.0f);
+}
+
+TEST(ConcatTest, ConcatMultipleTensors) {
+  Tensor<float> a(Shape({2}), std::vector<float>{1.0f, 2.0f});
+  Tensor<float> b(Shape({2}), std::vector<float>{3.0f, 4.0f});
+  Tensor<float> c(Shape({2}), std::vector<float>{5.0f, 6.0f});
+
+  Tensor<float> result = Tensor<float>::concat({a, b, c}, 0);
+
+  EXPECT_EQ(result.shape()[0], 6u);
+  EXPECT_FLOAT_EQ(result(0), 1.0f);
+  EXPECT_FLOAT_EQ(result(1), 2.0f);
+  EXPECT_FLOAT_EQ(result(2), 3.0f);
+  EXPECT_FLOAT_EQ(result(3), 4.0f);
+  EXPECT_FLOAT_EQ(result(4), 5.0f);
+  EXPECT_FLOAT_EQ(result(5), 6.0f);
+}
+
+TEST(ConcatTest, ConcatSingleTensor) {
+  Tensor<float> a(Shape({2, 3}), 1.0f);
+
+  Tensor<float> result = Tensor<float>::concat({a}, 0);
+
+  EXPECT_EQ(result.shape()[0], 2u);
+  EXPECT_EQ(result.shape()[1], 3u);
+  for (size_t i = 0; i < result.numel(); ++i) {
+    EXPECT_FLOAT_EQ(result(i), 1.0f);
+  }
+}
+
+TEST(ConcatTest, ConcatEmptyListThrows) {
+  std::vector<Tensor<float>> empty;
+  EXPECT_THROW(Tensor<float>::concat(empty, 0), std::runtime_error);
+}
+
+TEST(ConcatTest, ConcatDimOutOfRangeThrows) {
+  Tensor<float> a(Shape({2, 3}));
+  Tensor<float> b(Shape({2, 3}));
+
+  EXPECT_THROW(Tensor<float>::concat({a, b}, 2), std::runtime_error);
+}
+
+TEST(ConcatTest, ConcatMismatchedNdimThrows) {
+  Tensor<float> a(Shape({2, 3}));
+  Tensor<float> b(Shape({2, 3, 4}));
+
+  EXPECT_THROW(Tensor<float>::concat({a, b}, 0), std::runtime_error);
+}
+
+TEST(ConcatTest, ConcatMismatchedShapeThrows) {
+  // Different shape on non-concat dimension
+  Tensor<float> a(Shape({2, 3}));
+  Tensor<float> b(Shape({2, 4}));  // 4 != 3 on dim 1
+
+  EXPECT_THROW(Tensor<float>::concat({a, b}, 0), std::runtime_error);
+}
