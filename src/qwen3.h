@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "tensor.h"
@@ -51,6 +53,23 @@ struct Qwen3Layer {
 };
 
 // ============================================================================
+// KV Cache for efficient autoregressive generation
+// ============================================================================
+struct KVCache {
+  // k_cache[layer]: [batch, num_kv_heads, seq_len, head_dim]
+  // v_cache[layer]: [batch, num_kv_heads, seq_len, head_dim]
+  std::vector<Tensor<float>> k_cache;
+  std::vector<Tensor<float>> v_cache;
+  size_t seq_len = 0;
+
+  void clear() {
+    k_cache.clear();
+    v_cache.clear();
+    seq_len = 0;
+  }
+};
+
+// ============================================================================
 // Qwen3 Model
 // ============================================================================
 class Qwen3Model {
@@ -65,9 +84,41 @@ class Qwen3Model {
   const Qwen3Layer& layer(size_t idx) const;
   size_t num_layers() const { return layers_.size(); }
 
+  // Forward pass - returns logits [batch, seq_len, vocab_size]
+  Tensor<float> forward(const std::vector<uint32_t>& tokens,
+                        size_t start_pos = 0,
+                        KVCache* cache = nullptr) const;
+
+  // Generate tokens autoregressively
+  std::vector<uint32_t> generate(const std::vector<uint32_t>& prompt,
+                                  size_t max_tokens,
+                                  float temperature = 1.0f) const;
+
  private:
   Qwen3Config config_;
   Tensor<float> embed_tokens_;       // [vocab_size, hidden_size]
   std::vector<Qwen3Layer> layers_;   // num_hidden_layers layers
   Tensor<float> norm_;               // [hidden_size] - final RMS norm
+
+  // Internal forward pass helpers
+  Tensor<float> attention(const Tensor<float>& hidden_states,
+                          const Qwen3Attention& attn,
+                          size_t layer_idx,
+                          size_t start_pos,
+                          KVCache* cache) const;
+
+  Tensor<float> mlp(const Tensor<float>& hidden_states,
+                    const Qwen3MLP& mlp_weights) const;
+
+  Tensor<float> transformer_block(const Tensor<float>& hidden_states,
+                                   const Qwen3Layer& layer,
+                                   size_t layer_idx,
+                                   size_t start_pos,
+                                   KVCache* cache) const;
+
+  // Embedding lookup
+  Tensor<float> embed(const std::vector<uint32_t>& tokens) const;
+
+  // Compute logits from hidden states
+  Tensor<float> lm_head(const Tensor<float>& hidden_states) const;
 };

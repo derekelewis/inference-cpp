@@ -146,13 +146,35 @@ class Tensor {
   // Apply function element-wise
   Tensor<T> apply(std::function<T(T)> func) const;
 
+  // Rotary Position Embedding (RoPE)
+  // Expects shape [..., seq_len, head_dim] where head_dim is even
+  // start_pos: starting position for the sequence (for incremental decoding)
+  // base: RoPE base frequency (default 10000)
+  Tensor<T> rope(size_t start_pos, T base = T(10000)) const;
+
+  // Create causal attention mask
+  // Returns [seq_len, total_len] mask where mask[i,j] = -inf if j > i + offset
+  // offset = total_len - seq_len (for KV cache scenarios)
+  static Tensor<T> causal_mask(size_t seq_len, size_t total_len);
+  static Tensor<T> causal_mask(size_t seq_len) { return causal_mask(seq_len, seq_len); }
+
+ public:
+  // Check if tensor data is contiguous in memory
+  bool is_contiguous() const;
+
  private:
   Shape shape_;
-  std::vector<T> data_;
+  std::shared_ptr<std::vector<T>> storage_;  // Shared underlying data
+  size_t offset_ = 0;                         // Start offset into storage
+  std::vector<size_t> strides_;               // Element strides per dimension
+
+  // Private constructor for creating views
+  Tensor(std::shared_ptr<std::vector<T>> storage, size_t offset,
+         const Shape& shape, std::vector<size_t> strides);
 
   // Helper functions
   size_t compute_flat_index(const std::vector<size_t>& indices) const;
-  std::vector<size_t> compute_strides() const;
+  static std::vector<size_t> compute_contiguous_strides(const Shape& shape);
 
   // Broadcasting helper
   template <typename Op>
@@ -237,36 +259,67 @@ inline Shape Shape::broadcast_shape(const Shape& a, const Shape& b) {
 
 // Constructors
 template <typename T>
-Tensor<T>::Tensor() : shape_({1}), data_(1) {}
+Tensor<T>::Tensor()
+    : shape_({1})
+    , storage_(std::make_shared<std::vector<T>>(1))
+    , offset_(0)
+    , strides_(compute_contiguous_strides(shape_)) {}
 
 template <typename T>
-Tensor<T>::Tensor(const Shape& s) : shape_(s), data_(s.numel()) {}
+Tensor<T>::Tensor(const Shape& s)
+    : shape_(s)
+    , storage_(std::make_shared<std::vector<T>>(s.numel()))
+    , offset_(0)
+    , strides_(compute_contiguous_strides(s)) {}
 
 template <typename T>
 Tensor<T>::Tensor(const Shape& s, const T& fill_value)
-    : shape_(s), data_(s.numel(), fill_value) {}
+    : shape_(s)
+    , storage_(std::make_shared<std::vector<T>>(s.numel(), fill_value))
+    , offset_(0)
+    , strides_(compute_contiguous_strides(s)) {}
 
 template <typename T>
 Tensor<T>::Tensor(const Shape& s, const std::vector<T>& data)
-    : shape_(s), data_(data) {
-  if (data_.size() != s.numel()) {
+    : shape_(s)
+    , storage_(std::make_shared<std::vector<T>>(data))
+    , offset_(0)
+    , strides_(compute_contiguous_strides(s)) {
+  if (storage_->size() != s.numel()) {
     throw std::runtime_error("Data size does not match shape size");
   }
 }
 
+// Private view constructor - shares storage with another tensor
+template <typename T>
+Tensor<T>::Tensor(std::shared_ptr<std::vector<T>> storage, size_t offset,
+                  const Shape& shape, std::vector<size_t> strides)
+    : shape_(shape)
+    , storage_(storage)
+    , offset_(offset)
+    , strides_(std::move(strides)) {}
+
 template <typename T>
 Tensor<T>::Tensor(const Tensor& other)
-    : shape_(other.shape_), data_(other.data_) {}
+    : shape_(other.shape_)
+    , storage_(other.storage_)
+    , offset_(other.offset_)
+    , strides_(other.strides_) {}
 
 template <typename T>
 Tensor<T>::Tensor(Tensor&& other) noexcept
-    : shape_(std::move(other.shape_)), data_(std::move(other.data_)) {}
+    : shape_(std::move(other.shape_))
+    , storage_(std::move(other.storage_))
+    , offset_(other.offset_)
+    , strides_(std::move(other.strides_)) {}
 
 template <typename T>
 Tensor<T>& Tensor<T>::operator=(const Tensor& other) {
   if (this != &other) {
     shape_ = other.shape_;
-    data_ = other.data_;
+    storage_ = other.storage_;
+    offset_ = other.offset_;
+    strides_ = other.strides_;
   }
   return *this;
 }
@@ -275,7 +328,9 @@ template <typename T>
 Tensor<T>& Tensor<T>::operator=(Tensor&& other) noexcept {
   if (this != &other) {
     shape_ = std::move(other.shape_);
-    data_ = std::move(other.data_);
+    storage_ = std::move(other.storage_);
+    offset_ = other.offset_;
+    strides_ = std::move(other.strides_);
   }
   return *this;
 }
@@ -293,7 +348,7 @@ size_t Tensor<T>::ndim() const {
 
 template <typename T>
 size_t Tensor<T>::numel() const {
-  return data_.size();
+  return shape_.numel();
 }
 
 template <typename T>
@@ -304,78 +359,71 @@ size_t Tensor<T>::size(size_t dim) const {
 // Data access
 template <typename T>
 T* Tensor<T>::data() {
-  return data_.data();
+  return storage_->data() + offset_;
 }
 
 template <typename T>
 const T* Tensor<T>::data() const {
-  return data_.data();
+  return storage_->data() + offset_;
 }
 
 template <typename T>
 T& Tensor<T>::operator()(size_t i) {
-  return data_[i];
+  // Flat indexing - assumes contiguous layout or 1D tensor
+  return data()[i];
 }
 
 template <typename T>
 const T& Tensor<T>::operator()(size_t i) const {
-  return data_[i];
+  // Flat indexing - assumes contiguous layout or 1D tensor
+  return data()[i];
 }
 
 template <typename T>
 T& Tensor<T>::operator()(size_t i, size_t j) {
-  size_t cols = shape_[1];
-  return data_[i * cols + j];
+  return (*storage_)[offset_ + i * strides_[0] + j * strides_[1]];
 }
 
 template <typename T>
 const T& Tensor<T>::operator()(size_t i, size_t j) const {
-  size_t cols = shape_[1];
-  return data_[i * cols + j];
+  return (*storage_)[offset_ + i * strides_[0] + j * strides_[1]];
 }
 
 template <typename T>
 T& Tensor<T>::operator()(size_t i, size_t j, size_t k) {
-  const auto& dims = shape_.dims();
-  return data_[(i * dims[1] + j) * dims[2] + k];
+  return (*storage_)[offset_ + i * strides_[0] + j * strides_[1] + k * strides_[2]];
 }
 
 template <typename T>
 const T& Tensor<T>::operator()(size_t i, size_t j, size_t k) const {
-  const auto& dims = shape_.dims();
-  return data_[(i * dims[1] + j) * dims[2] + k];
+  return (*storage_)[offset_ + i * strides_[0] + j * strides_[1] + k * strides_[2]];
 }
 
 template <typename T>
 T& Tensor<T>::operator()(size_t i, size_t j, size_t k, size_t l) {
-  const auto& dims = shape_.dims();
-  return data_[((i * dims[1] + j) * dims[2] + k) * dims[3] + l];
+  return (*storage_)[offset_ + i * strides_[0] + j * strides_[1] + k * strides_[2] + l * strides_[3]];
 }
 
 template <typename T>
 const T& Tensor<T>::operator()(size_t i, size_t j, size_t k, size_t l) const {
-  const auto& dims = shape_.dims();
-  return data_[((i * dims[1] + j) * dims[2] + k) * dims[3] + l];
+  return (*storage_)[offset_ + i * strides_[0] + j * strides_[1] + k * strides_[2] + l * strides_[3]];
 }
 
 template <typename T>
 size_t Tensor<T>::compute_flat_index(const std::vector<size_t>& indices) const {
-  const auto& dims = shape_.dims();
-  if (indices.size() != dims.size()) {
+  if (indices.size() != strides_.size()) {
     throw std::runtime_error("Index dimensions don't match tensor dimensions");
   }
-  size_t flat_idx = 0;
-  size_t stride = 1;
-  for (int i = static_cast<int>(dims.size()) - 1; i >= 0; --i) {
-    flat_idx += indices[i] * stride;
-    stride *= dims[i];
+  size_t flat_idx = offset_;
+  for (size_t i = 0; i < indices.size(); ++i) {
+    flat_idx += indices[i] * strides_[i];
   }
   return flat_idx;
 }
 
 template <typename T>
-std::vector<size_t> Tensor<T>::compute_strides() const {
-  const auto& dims = shape_.dims();
+std::vector<size_t> Tensor<T>::compute_contiguous_strides(const Shape& shape) {
+  const auto& dims = shape.dims();
   std::vector<size_t> strides(dims.size());
   size_t stride = 1;
   for (int i = static_cast<int>(dims.size()) - 1; i >= 0; --i) {
@@ -386,13 +434,23 @@ std::vector<size_t> Tensor<T>::compute_strides() const {
 }
 
 template <typename T>
+bool Tensor<T>::is_contiguous() const {
+  size_t expected = 1;
+  for (int i = static_cast<int>(ndim()) - 1; i >= 0; --i) {
+    if (strides_[i] != expected) return false;
+    expected *= shape_[i];
+  }
+  return true;
+}
+
+template <typename T>
 T& Tensor<T>::at(const std::vector<size_t>& indices) {
-  return data_[compute_flat_index(indices)];
+  return (*storage_)[compute_flat_index(indices)];
 }
 
 template <typename T>
 const T& Tensor<T>::at(const std::vector<size_t>& indices) const {
-  return data_[compute_flat_index(indices)];
+  return (*storage_)[compute_flat_index(indices)];
 }
 
 // Shape manipulation
@@ -402,9 +460,13 @@ Tensor<T> Tensor<T>::reshape(const Shape& new_shape) const {
     throw std::runtime_error(
         "Cannot reshape: total number of elements must remain the same");
   }
-  Tensor<T> result(new_shape);
-  std::copy(data_.begin(), data_.end(), result.data_.begin());
-  return result;
+  // Can only create view if contiguous - otherwise need to copy first
+  if (!is_contiguous()) {
+    return contiguous().reshape(new_shape);
+  }
+  // Return a view with same storage, new shape and contiguous strides
+  return Tensor<T>(storage_, offset_, new_shape,
+                   compute_contiguous_strides(new_shape));
 }
 
 template <typename T>
@@ -412,15 +474,10 @@ Tensor<T> Tensor<T>::transpose() const {
   if (ndim() != 2) {
     throw std::runtime_error("transpose() without args requires 2D tensor");
   }
-  size_t rows = shape_[0];
-  size_t cols = shape_[1];
-  Tensor<T> result(Shape({cols, rows}));
-  for (size_t i = 0; i < rows; ++i) {
-    for (size_t j = 0; j < cols; ++j) {
-      result(j, i) = (*this)(i, j);
-    }
-  }
-  return result;
+  // Return view with swapped shape and strides
+  Shape new_shape({shape_[1], shape_[0]});
+  std::vector<size_t> new_strides = {strides_[1], strides_[0]};
+  return Tensor<T>(storage_, offset_, new_shape, new_strides);
 }
 
 template <typename T>
@@ -437,48 +494,17 @@ Tensor<T> Tensor<T>::permute(const std::vector<size_t>& dims_order) const {
     throw std::runtime_error("Permute dimensions must match tensor dimensions");
   }
 
+  // Build new shape and strides by reordering according to dims_order
   const auto& old_dims = shape_.dims();
   std::vector<size_t> new_dims(ndim());
+  std::vector<size_t> new_strides(ndim());
   for (size_t i = 0; i < ndim(); ++i) {
     new_dims[i] = old_dims[dims_order[i]];
+    new_strides[i] = strides_[dims_order[i]];
   }
 
-  Tensor<T> result{Shape(new_dims)};
-  std::vector<size_t> old_strides = compute_strides();
-
-  std::vector<size_t> new_strides(ndim());
-  size_t stride = 1;
-  for (int i = static_cast<int>(ndim()) - 1; i >= 0; --i) {
-    new_strides[i] = stride;
-    stride *= new_dims[i];
-  }
-
-  // Iterate over all elements in the new tensor
-  std::vector<size_t> new_indices(ndim(), 0);
-  for (size_t flat_idx = 0; flat_idx < numel(); ++flat_idx) {
-    // Compute old indices from new indices
-    std::vector<size_t> old_indices(ndim());
-    for (size_t i = 0; i < ndim(); ++i) {
-      old_indices[dims_order[i]] = new_indices[i];
-    }
-
-    // Compute flat indices
-    size_t old_flat = 0;
-    for (size_t i = 0; i < ndim(); ++i) {
-      old_flat += old_indices[i] * old_strides[i];
-    }
-
-    result.data_[flat_idx] = data_[old_flat];
-
-    // Increment new indices
-    for (int i = static_cast<int>(ndim()) - 1; i >= 0; --i) {
-      new_indices[i]++;
-      if (new_indices[i] < new_dims[i]) break;
-      new_indices[i] = 0;
-    }
-  }
-
-  return result;
+  // Return view with permuted shape and strides
+  return Tensor<T>(storage_, offset_, Shape(new_dims), new_strides);
 }
 
 template <typename T>
@@ -524,44 +550,51 @@ Tensor<T> Tensor<T>::slice(size_t dim, size_t start, size_t end) const {
     throw std::runtime_error("Invalid slice range");
   }
 
+  // Create new shape with sliced dimension
   std::vector<size_t> new_dims = dims;
   new_dims[dim] = end - start;
-  Tensor<T> result{Shape(new_dims)};
 
-  std::vector<size_t> strides = compute_strides();
-  size_t outer_stride = (dim > 0) ? strides[dim - 1] : numel();
-  size_t inner_size = (dim < dims.size() - 1) ? strides[dim] : 1;
+  // Compute new offset: move start * stride[dim] elements into the storage
+  size_t new_offset = offset_ + start * strides_[dim];
 
-  size_t num_outer = numel() / outer_stride;
-  size_t result_idx = 0;
-
-  for (size_t outer = 0; outer < num_outer; ++outer) {
-    size_t base_idx = outer * outer_stride;
-    for (size_t s = start; s < end; ++s) {
-      size_t src_base = base_idx + s * inner_size;
-      for (size_t inner = 0; inner < inner_size; ++inner) {
-        result.data_[result_idx++] = data_[src_base + inner];
-      }
-    }
-  }
-
-  return result;
+  // Return view with adjusted offset and shape (strides stay the same)
+  return Tensor<T>(storage_, new_offset, Shape(new_dims), strides_);
 }
 
 template <typename T>
 Tensor<T> Tensor<T>::contiguous() const {
-  return clone();
+  if (is_contiguous()) {
+    return *this;  // Already contiguous, return shallow copy (view)
+  }
+  // Create new contiguous storage and copy data
+  Tensor<T> result(shape_);
+  // Copy with stride-aware iteration
+  const auto& dims = shape_.dims();
+  std::vector<size_t> indices(ndim(), 0);
+  for (size_t flat_idx = 0; flat_idx < numel(); ++flat_idx) {
+    (*result.storage_)[flat_idx] = at(indices);
+    // Increment indices
+    for (int i = static_cast<int>(ndim()) - 1; i >= 0; --i) {
+      indices[i]++;
+      if (indices[i] < dims[i]) break;
+      indices[i] = 0;
+    }
+  }
+  return result;
 }
 
 // Broadcasting helper
 template <typename T>
 template <typename Op>
 Tensor<T> Tensor<T>::broadcast_op(const Tensor<T>& other, Op op) const {
-  // Fast path: shapes are identical
-  if (shape_ == other.shape_) {
+  // Fast path: shapes are identical and both contiguous
+  if (shape_ == other.shape_ && is_contiguous() && other.is_contiguous()) {
     Tensor<T> result(shape_);
+    const T* a_data = data();
+    const T* b_data = other.data();
+    T* r_data = result.data();
     for (size_t i = 0; i < numel(); ++i) {
-      result.data_[i] = op(data_[i], other.data_[i]);
+      r_data[i] = op(a_data[i], b_data[i]);
     }
     return result;
   }
@@ -580,48 +613,37 @@ Tensor<T> Tensor<T>::broadcast_op(const Tensor<T>& other, Op op) const {
   const auto& b_dims = other.shape_.dims();
   size_t result_ndim = result_dims.size();
 
-  // Compute strides for result tensor
-  std::vector<size_t> result_strides(result_ndim);
-  size_t stride = 1;
-  for (int i = static_cast<int>(result_ndim) - 1; i >= 0; --i) {
-    result_strides[i] = stride;
-    stride *= result_dims[i];
-  }
+  // Compute broadcast strides for input tensors
+  // For each dimension in result, compute what stride to use for a and b
+  // Use 0 for broadcast dimensions (size 1) or missing dimensions
+  std::vector<size_t> a_bcast_strides(result_ndim, 0);
+  std::vector<size_t> b_bcast_strides(result_ndim, 0);
 
-  // Compute strides for input tensors (with broadcasting: 0 for broadcast dims)
-  std::vector<size_t> a_strides(result_ndim, 0);
-  std::vector<size_t> b_strides(result_ndim, 0);
+  for (size_t i = 0; i < result_ndim; ++i) {
+    int a_idx = static_cast<int>(i) - (static_cast<int>(result_ndim) - static_cast<int>(a_dims.size()));
+    int b_idx = static_cast<int>(i) - (static_cast<int>(result_ndim) - static_cast<int>(b_dims.size()));
 
-  size_t a_stride = 1;
-  for (int i = static_cast<int>(a_dims.size()) - 1; i >= 0; --i) {
-    size_t result_idx = result_ndim - a_dims.size() + i;
-    if (a_dims[i] != 1) {
-      a_strides[result_idx] = a_stride;
+    if (a_idx >= 0 && a_dims[a_idx] != 1) {
+      a_bcast_strides[i] = strides_[a_idx];
     }
-    a_stride *= a_dims[i];
-  }
-
-  size_t b_stride = 1;
-  for (int i = static_cast<int>(b_dims.size()) - 1; i >= 0; --i) {
-    size_t result_idx = result_ndim - b_dims.size() + i;
-    if (b_dims[i] != 1) {
-      b_strides[result_idx] = b_stride;
+    if (b_idx >= 0 && b_dims[b_idx] != 1) {
+      b_bcast_strides[i] = other.strides_[b_idx];
     }
-    b_stride *= b_dims[i];
   }
 
   // Iterate over result tensor
+  T* r_data = result.data();
   std::vector<size_t> indices(result_ndim, 0);
   for (size_t flat_idx = 0; flat_idx < result.numel(); ++flat_idx) {
-    // Compute flat indices for a and b using broadcast strides
-    size_t a_flat = 0;
-    size_t b_flat = 0;
+    // Compute offsets for a and b using broadcast strides
+    size_t a_offset = offset_;
+    size_t b_offset = other.offset_;
     for (size_t d = 0; d < result_ndim; ++d) {
-      a_flat += indices[d] * a_strides[d];
-      b_flat += indices[d] * b_strides[d];
+      a_offset += indices[d] * a_bcast_strides[d];
+      b_offset += indices[d] * b_bcast_strides[d];
     }
 
-    result.data_[flat_idx] = op(data_[a_flat], other.data_[b_flat]);
+    r_data[flat_idx] = op((*storage_)[a_offset], (*other.storage_)[b_offset]);
 
     // Increment indices
     for (int i = static_cast<int>(result_ndim) - 1; i >= 0; --i) {
@@ -658,8 +680,22 @@ Tensor<T> Tensor<T>::operator/(const Tensor<T>& other) const {
 template <typename T>
 Tensor<T> Tensor<T>::operator+(const T& scalar) const {
   Tensor<T> result(shape_);
-  for (size_t i = 0; i < numel(); ++i) {
-    result.data_[i] = data_[i] + scalar;
+  T* r_data = result.data();
+  if (is_contiguous()) {
+    const T* src = data();
+    for (size_t i = 0; i < numel(); ++i) {
+      r_data[i] = src[i] + scalar;
+    }
+  } else {
+    const auto& dims = shape_.dims();
+    std::vector<size_t> indices(ndim(), 0);
+    for (size_t i = 0; i < numel(); ++i) {
+      r_data[i] = at(indices) + scalar;
+      for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+        if (++indices[d] < dims[d]) break;
+        indices[d] = 0;
+      }
+    }
   }
   return result;
 }
@@ -667,8 +703,22 @@ Tensor<T> Tensor<T>::operator+(const T& scalar) const {
 template <typename T>
 Tensor<T> Tensor<T>::operator-(const T& scalar) const {
   Tensor<T> result(shape_);
-  for (size_t i = 0; i < numel(); ++i) {
-    result.data_[i] = data_[i] - scalar;
+  T* r_data = result.data();
+  if (is_contiguous()) {
+    const T* src = data();
+    for (size_t i = 0; i < numel(); ++i) {
+      r_data[i] = src[i] - scalar;
+    }
+  } else {
+    const auto& dims = shape_.dims();
+    std::vector<size_t> indices(ndim(), 0);
+    for (size_t i = 0; i < numel(); ++i) {
+      r_data[i] = at(indices) - scalar;
+      for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+        if (++indices[d] < dims[d]) break;
+        indices[d] = 0;
+      }
+    }
   }
   return result;
 }
@@ -676,8 +726,22 @@ Tensor<T> Tensor<T>::operator-(const T& scalar) const {
 template <typename T>
 Tensor<T> Tensor<T>::operator*(const T& scalar) const {
   Tensor<T> result(shape_);
-  for (size_t i = 0; i < numel(); ++i) {
-    result.data_[i] = data_[i] * scalar;
+  T* r_data = result.data();
+  if (is_contiguous()) {
+    const T* src = data();
+    for (size_t i = 0; i < numel(); ++i) {
+      r_data[i] = src[i] * scalar;
+    }
+  } else {
+    const auto& dims = shape_.dims();
+    std::vector<size_t> indices(ndim(), 0);
+    for (size_t i = 0; i < numel(); ++i) {
+      r_data[i] = at(indices) * scalar;
+      for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+        if (++indices[d] < dims[d]) break;
+        indices[d] = 0;
+      }
+    }
   }
   return result;
 }
@@ -685,8 +749,22 @@ Tensor<T> Tensor<T>::operator*(const T& scalar) const {
 template <typename T>
 Tensor<T> Tensor<T>::operator/(const T& scalar) const {
   Tensor<T> result(shape_);
-  for (size_t i = 0; i < numel(); ++i) {
-    result.data_[i] = data_[i] / scalar;
+  T* r_data = result.data();
+  if (is_contiguous()) {
+    const T* src = data();
+    for (size_t i = 0; i < numel(); ++i) {
+      r_data[i] = src[i] / scalar;
+    }
+  } else {
+    const auto& dims = shape_.dims();
+    std::vector<size_t> indices(ndim(), 0);
+    for (size_t i = 0; i < numel(); ++i) {
+      r_data[i] = at(indices) / scalar;
+      for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+        if (++indices[d] < dims[d]) break;
+        indices[d] = 0;
+      }
+    }
   }
   return result;
 }
@@ -694,8 +772,22 @@ Tensor<T> Tensor<T>::operator/(const T& scalar) const {
 template <typename T>
 Tensor<T> Tensor<T>::neg() const {
   Tensor<T> result(shape_);
-  for (size_t i = 0; i < numel(); ++i) {
-    result.data_[i] = -data_[i];
+  T* r_data = result.data();
+  if (is_contiguous()) {
+    const T* src = data();
+    for (size_t i = 0; i < numel(); ++i) {
+      r_data[i] = -src[i];
+    }
+  } else {
+    const auto& dims = shape_.dims();
+    std::vector<size_t> indices(ndim(), 0);
+    for (size_t i = 0; i < numel(); ++i) {
+      r_data[i] = -at(indices);
+      for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+        if (++indices[d] < dims[d]) break;
+        indices[d] = 0;
+      }
+    }
   }
   return result;
 }
@@ -706,8 +798,14 @@ Tensor<T>& Tensor<T>::operator+=(const Tensor<T>& other) {
   if (shape_ != other.shape_) {
     throw std::runtime_error("Tensor shapes must match for addition");
   }
+  const auto& dims = shape_.dims();
+  std::vector<size_t> indices(ndim(), 0);
   for (size_t i = 0; i < numel(); ++i) {
-    data_[i] += other.data_[i];
+    at(indices) += other.at(indices);
+    for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+      if (++indices[d] < dims[d]) break;
+      indices[d] = 0;
+    }
   }
   return *this;
 }
@@ -717,8 +815,14 @@ Tensor<T>& Tensor<T>::operator-=(const Tensor<T>& other) {
   if (shape_ != other.shape_) {
     throw std::runtime_error("Tensor shapes must match for subtraction");
   }
+  const auto& dims = shape_.dims();
+  std::vector<size_t> indices(ndim(), 0);
   for (size_t i = 0; i < numel(); ++i) {
-    data_[i] -= other.data_[i];
+    at(indices) -= other.at(indices);
+    for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+      if (++indices[d] < dims[d]) break;
+      indices[d] = 0;
+    }
   }
   return *this;
 }
@@ -728,8 +832,14 @@ Tensor<T>& Tensor<T>::operator*=(const Tensor<T>& other) {
   if (shape_ != other.shape_) {
     throw std::runtime_error("Tensor shapes must match for multiplication");
   }
+  const auto& dims = shape_.dims();
+  std::vector<size_t> indices(ndim(), 0);
   for (size_t i = 0; i < numel(); ++i) {
-    data_[i] *= other.data_[i];
+    at(indices) *= other.at(indices);
+    for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+      if (++indices[d] < dims[d]) break;
+      indices[d] = 0;
+    }
   }
   return *this;
 }
@@ -739,40 +849,70 @@ Tensor<T>& Tensor<T>::operator/=(const Tensor<T>& other) {
   if (shape_ != other.shape_) {
     throw std::runtime_error("Tensor shapes must match for division");
   }
+  const auto& dims = shape_.dims();
+  std::vector<size_t> indices(ndim(), 0);
   for (size_t i = 0; i < numel(); ++i) {
-    data_[i] /= other.data_[i];
+    at(indices) /= other.at(indices);
+    for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+      if (++indices[d] < dims[d]) break;
+      indices[d] = 0;
+    }
   }
   return *this;
 }
 
 template <typename T>
 Tensor<T>& Tensor<T>::operator+=(const T& scalar) {
+  const auto& dims = shape_.dims();
+  std::vector<size_t> indices(ndim(), 0);
   for (size_t i = 0; i < numel(); ++i) {
-    data_[i] += scalar;
+    at(indices) += scalar;
+    for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+      if (++indices[d] < dims[d]) break;
+      indices[d] = 0;
+    }
   }
   return *this;
 }
 
 template <typename T>
 Tensor<T>& Tensor<T>::operator-=(const T& scalar) {
+  const auto& dims = shape_.dims();
+  std::vector<size_t> indices(ndim(), 0);
   for (size_t i = 0; i < numel(); ++i) {
-    data_[i] -= scalar;
+    at(indices) -= scalar;
+    for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+      if (++indices[d] < dims[d]) break;
+      indices[d] = 0;
+    }
   }
   return *this;
 }
 
 template <typename T>
 Tensor<T>& Tensor<T>::operator*=(const T& scalar) {
+  const auto& dims = shape_.dims();
+  std::vector<size_t> indices(ndim(), 0);
   for (size_t i = 0; i < numel(); ++i) {
-    data_[i] *= scalar;
+    at(indices) *= scalar;
+    for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+      if (++indices[d] < dims[d]) break;
+      indices[d] = 0;
+    }
   }
   return *this;
 }
 
 template <typename T>
 Tensor<T>& Tensor<T>::operator/=(const T& scalar) {
+  const auto& dims = shape_.dims();
+  std::vector<size_t> indices(ndim(), 0);
   for (size_t i = 0; i < numel(); ++i) {
-    data_[i] /= scalar;
+    at(indices) /= scalar;
+    for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+      if (++indices[d] < dims[d]) break;
+      indices[d] = 0;
+    }
   }
   return *this;
 }
@@ -781,8 +921,23 @@ Tensor<T>& Tensor<T>::operator/=(const T& scalar) {
 template <typename T>
 Tensor<T> Tensor<T>::relu() const {
   Tensor<T> result(shape_);
-  for (size_t i = 0; i < numel(); ++i) {
-    result.data_[i] = data_[i] > T(0) ? data_[i] : T(0);
+  T* r_data = result.data();
+  if (is_contiguous()) {
+    const T* src = data();
+    for (size_t i = 0; i < numel(); ++i) {
+      r_data[i] = src[i] > T(0) ? src[i] : T(0);
+    }
+  } else {
+    const auto& dims = shape_.dims();
+    std::vector<size_t> indices(ndim(), 0);
+    for (size_t i = 0; i < numel(); ++i) {
+      T v = at(indices);
+      r_data[i] = v > T(0) ? v : T(0);
+      for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+        if (++indices[d] < dims[d]) break;
+        indices[d] = 0;
+      }
+    }
   }
   return result;
 }
@@ -793,10 +948,26 @@ Tensor<T> Tensor<T>::gelu() const {
   const T sqrt_2_over_pi = T(0.7978845608028654);
   const T coeff = T(0.044715);
   Tensor<T> result(shape_);
-  for (size_t i = 0; i < numel(); ++i) {
-    T x = data_[i];
-    T inner = sqrt_2_over_pi * (x + coeff * x * x * x);
-    result.data_[i] = T(0.5) * x * (T(1) + std::tanh(inner));
+  T* r_data = result.data();
+  if (is_contiguous()) {
+    const T* src = data();
+    for (size_t i = 0; i < numel(); ++i) {
+      T x = src[i];
+      T inner = sqrt_2_over_pi * (x + coeff * x * x * x);
+      r_data[i] = T(0.5) * x * (T(1) + std::tanh(inner));
+    }
+  } else {
+    const auto& dims = shape_.dims();
+    std::vector<size_t> indices(ndim(), 0);
+    for (size_t i = 0; i < numel(); ++i) {
+      T x = at(indices);
+      T inner = sqrt_2_over_pi * (x + coeff * x * x * x);
+      r_data[i] = T(0.5) * x * (T(1) + std::tanh(inner));
+      for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+        if (++indices[d] < dims[d]) break;
+        indices[d] = 0;
+      }
+    }
   }
   return result;
 }
@@ -805,9 +976,24 @@ template <typename T>
 Tensor<T> Tensor<T>::silu() const {
   // SiLU(x) = x * sigmoid(x) = x / (1 + exp(-x))
   Tensor<T> result(shape_);
-  for (size_t i = 0; i < numel(); ++i) {
-    T x = data_[i];
-    result.data_[i] = x / (T(1) + std::exp(-x));
+  T* r_data = result.data();
+  if (is_contiguous()) {
+    const T* src = data();
+    for (size_t i = 0; i < numel(); ++i) {
+      T x = src[i];
+      r_data[i] = x / (T(1) + std::exp(-x));
+    }
+  } else {
+    const auto& dims = shape_.dims();
+    std::vector<size_t> indices(ndim(), 0);
+    for (size_t i = 0; i < numel(); ++i) {
+      T x = at(indices);
+      r_data[i] = x / (T(1) + std::exp(-x));
+      for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+        if (++indices[d] < dims[d]) break;
+        indices[d] = 0;
+      }
+    }
   }
   return result;
 }
@@ -815,8 +1001,22 @@ Tensor<T> Tensor<T>::silu() const {
 template <typename T>
 Tensor<T> Tensor<T>::sigmoid() const {
   Tensor<T> result(shape_);
-  for (size_t i = 0; i < numel(); ++i) {
-    result.data_[i] = T(1) / (T(1) + std::exp(-data_[i]));
+  T* r_data = result.data();
+  if (is_contiguous()) {
+    const T* src = data();
+    for (size_t i = 0; i < numel(); ++i) {
+      r_data[i] = T(1) / (T(1) + std::exp(-src[i]));
+    }
+  } else {
+    const auto& dims = shape_.dims();
+    std::vector<size_t> indices(ndim(), 0);
+    for (size_t i = 0; i < numel(); ++i) {
+      r_data[i] = T(1) / (T(1) + std::exp(-at(indices)));
+      for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+        if (++indices[d] < dims[d]) break;
+        indices[d] = 0;
+      }
+    }
   }
   return result;
 }
@@ -824,8 +1024,22 @@ Tensor<T> Tensor<T>::sigmoid() const {
 template <typename T>
 Tensor<T> Tensor<T>::tanh_() const {
   Tensor<T> result(shape_);
-  for (size_t i = 0; i < numel(); ++i) {
-    result.data_[i] = std::tanh(data_[i]);
+  T* r_data = result.data();
+  if (is_contiguous()) {
+    const T* src = data();
+    for (size_t i = 0; i < numel(); ++i) {
+      r_data[i] = std::tanh(src[i]);
+    }
+  } else {
+    const auto& dims = shape_.dims();
+    std::vector<size_t> indices(ndim(), 0);
+    for (size_t i = 0; i < numel(); ++i) {
+      r_data[i] = std::tanh(at(indices));
+      for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+        if (++indices[d] < dims[d]) break;
+        indices[d] = 0;
+      }
+    }
   }
   return result;
 }
@@ -834,8 +1048,21 @@ Tensor<T> Tensor<T>::tanh_() const {
 template <typename T>
 T Tensor<T>::sum() const {
   T result = T(0);
-  for (size_t i = 0; i < numel(); ++i) {
-    result += data_[i];
+  if (is_contiguous()) {
+    const T* src = data();
+    for (size_t i = 0; i < numel(); ++i) {
+      result += src[i];
+    }
+  } else {
+    const auto& dims = shape_.dims();
+    std::vector<size_t> indices(ndim(), 0);
+    for (size_t i = 0; i < numel(); ++i) {
+      result += at(indices);
+      for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+        if (++indices[d] < dims[d]) break;
+        indices[d] = 0;
+      }
+    }
   }
   return result;
 }
@@ -850,9 +1077,21 @@ T Tensor<T>::max() const {
   if (numel() == 0) {
     throw std::runtime_error("Cannot get max of empty tensor");
   }
-  T result = data_[0];
+  const auto& dims = shape_.dims();
+  std::vector<size_t> indices(ndim(), 0);
+  T result = at(indices);
+  // Increment to first position
+  for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+    if (++indices[d] < dims[d]) break;
+    indices[d] = 0;
+  }
   for (size_t i = 1; i < numel(); ++i) {
-    if (data_[i] > result) result = data_[i];
+    T v = at(indices);
+    if (v > result) result = v;
+    for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+      if (++indices[d] < dims[d]) break;
+      indices[d] = 0;
+    }
   }
   return result;
 }
@@ -862,9 +1101,21 @@ T Tensor<T>::min() const {
   if (numel() == 0) {
     throw std::runtime_error("Cannot get min of empty tensor");
   }
-  T result = data_[0];
+  const auto& dims = shape_.dims();
+  std::vector<size_t> indices(ndim(), 0);
+  T result = at(indices);
+  // Increment to first position
+  for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+    if (++indices[d] < dims[d]) break;
+    indices[d] = 0;
+  }
   for (size_t i = 1; i < numel(); ++i) {
-    if (data_[i] < result) result = data_[i];
+    T v = at(indices);
+    if (v < result) result = v;
+    for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+      if (++indices[d] < dims[d]) break;
+      indices[d] = 0;
+    }
   }
   return result;
 }
@@ -887,36 +1138,35 @@ Tensor<T> Tensor<T>::sum(size_t dim, bool keepdim) const {
   if (new_dims.empty()) new_dims.push_back(1);
 
   Tensor<T> result(Shape(new_dims), T(0));
-  std::vector<size_t> strides = compute_strides();
+  T* r_data = result.data();
 
-  // Iterate through all elements
+  // Iterate through all elements using strided access
   std::vector<size_t> indices(dims.size(), 0);
-  for (size_t flat_idx = 0; flat_idx < numel(); ++flat_idx) {
+  for (size_t i = 0; i < numel(); ++i) {
     // Compute result index (skip the reduced dimension)
     std::vector<size_t> result_indices;
-    for (size_t i = 0; i < dims.size(); ++i) {
-      if (i == dim) {
+    for (size_t d = 0; d < dims.size(); ++d) {
+      if (d == dim) {
         if (keepdim) result_indices.push_back(0);
       } else {
-        result_indices.push_back(indices[i]);
+        result_indices.push_back(indices[d]);
       }
     }
     if (result_indices.empty()) result_indices.push_back(0);
 
     size_t result_flat = 0;
     size_t result_stride = 1;
-    for (int i = static_cast<int>(result_indices.size()) - 1; i >= 0; --i) {
-      result_flat += result_indices[i] * result_stride;
-      result_stride *= new_dims[i];
+    for (int d = static_cast<int>(result_indices.size()) - 1; d >= 0; --d) {
+      result_flat += result_indices[d] * result_stride;
+      result_stride *= new_dims[d];
     }
 
-    result.data_[result_flat] += data_[flat_idx];
+    r_data[result_flat] += at(indices);
 
     // Increment indices
-    for (int i = static_cast<int>(dims.size()) - 1; i >= 0; --i) {
-      indices[i]++;
-      if (indices[i] < dims[i]) break;
-      indices[i] = 0;
+    for (int d = static_cast<int>(dims.size()) - 1; d >= 0; --d) {
+      if (++indices[d] < dims[d]) break;
+      indices[d] = 0;
     }
   }
 
@@ -927,8 +1177,9 @@ template <typename T>
 Tensor<T> Tensor<T>::mean(size_t dim, bool keepdim) const {
   Tensor<T> result = sum(dim, keepdim);
   T count = static_cast<T>(shape_[dim]);
+  T* r_data = result.data();
   for (size_t i = 0; i < result.numel(); ++i) {
-    result.data_[i] /= count;
+    r_data[i] /= count;
   }
   return result;
 }
@@ -952,37 +1203,38 @@ Tensor<T> Tensor<T>::max(size_t dim, bool keepdim) const {
 
   // Initialize with very small values
   Tensor<T> result{Shape(new_dims)};
+  T* r_data = result.data();
   for (size_t i = 0; i < result.numel(); ++i) {
-    result.data_[i] = std::numeric_limits<T>::lowest();
+    r_data[i] = std::numeric_limits<T>::lowest();
   }
 
   std::vector<size_t> indices(dims.size(), 0);
-  for (size_t flat_idx = 0; flat_idx < numel(); ++flat_idx) {
+  for (size_t i = 0; i < numel(); ++i) {
     std::vector<size_t> result_indices;
-    for (size_t i = 0; i < dims.size(); ++i) {
-      if (i == dim) {
+    for (size_t d = 0; d < dims.size(); ++d) {
+      if (d == dim) {
         if (keepdim) result_indices.push_back(0);
       } else {
-        result_indices.push_back(indices[i]);
+        result_indices.push_back(indices[d]);
       }
     }
     if (result_indices.empty()) result_indices.push_back(0);
 
     size_t result_flat = 0;
     size_t result_stride = 1;
-    for (int i = static_cast<int>(result_indices.size()) - 1; i >= 0; --i) {
-      result_flat += result_indices[i] * result_stride;
-      result_stride *= new_dims[i];
+    for (int d = static_cast<int>(result_indices.size()) - 1; d >= 0; --d) {
+      result_flat += result_indices[d] * result_stride;
+      result_stride *= new_dims[d];
     }
 
-    if (data_[flat_idx] > result.data_[result_flat]) {
-      result.data_[result_flat] = data_[flat_idx];
+    T v = at(indices);
+    if (v > r_data[result_flat]) {
+      r_data[result_flat] = v;
     }
 
-    for (int i = static_cast<int>(dims.size()) - 1; i >= 0; --i) {
-      indices[i]++;
-      if (indices[i] < dims[i]) break;
-      indices[i] = 0;
+    for (int d = static_cast<int>(dims.size()) - 1; d >= 0; --d) {
+      if (++indices[d] < dims[d]) break;
+      indices[d] = 0;
     }
   }
 
@@ -1007,37 +1259,38 @@ Tensor<T> Tensor<T>::min(size_t dim, bool keepdim) const {
   if (new_dims.empty()) new_dims.push_back(1);
 
   Tensor<T> result{Shape(new_dims)};
+  T* r_data = result.data();
   for (size_t i = 0; i < result.numel(); ++i) {
-    result.data_[i] = std::numeric_limits<T>::max();
+    r_data[i] = std::numeric_limits<T>::max();
   }
 
   std::vector<size_t> indices(dims.size(), 0);
-  for (size_t flat_idx = 0; flat_idx < numel(); ++flat_idx) {
+  for (size_t i = 0; i < numel(); ++i) {
     std::vector<size_t> result_indices;
-    for (size_t i = 0; i < dims.size(); ++i) {
-      if (i == dim) {
+    for (size_t d = 0; d < dims.size(); ++d) {
+      if (d == dim) {
         if (keepdim) result_indices.push_back(0);
       } else {
-        result_indices.push_back(indices[i]);
+        result_indices.push_back(indices[d]);
       }
     }
     if (result_indices.empty()) result_indices.push_back(0);
 
     size_t result_flat = 0;
     size_t result_stride = 1;
-    for (int i = static_cast<int>(result_indices.size()) - 1; i >= 0; --i) {
-      result_flat += result_indices[i] * result_stride;
-      result_stride *= new_dims[i];
+    for (int d = static_cast<int>(result_indices.size()) - 1; d >= 0; --d) {
+      result_flat += result_indices[d] * result_stride;
+      result_stride *= new_dims[d];
     }
 
-    if (data_[flat_idx] < result.data_[result_flat]) {
-      result.data_[result_flat] = data_[flat_idx];
+    T v = at(indices);
+    if (v < r_data[result_flat]) {
+      r_data[result_flat] = v;
     }
 
-    for (int i = static_cast<int>(dims.size()) - 1; i >= 0; --i) {
-      indices[i]++;
-      if (indices[i] < dims[i]) break;
-      indices[i] = 0;
+    for (int d = static_cast<int>(dims.size()) - 1; d >= 0; --d) {
+      if (++indices[d] < dims[d]) break;
+      indices[d] = 0;
     }
   }
 
@@ -1062,29 +1315,29 @@ Tensor<size_t> Tensor<T>::argmax(size_t dim) const {
   std::vector<T> max_vals(result.numel(), std::numeric_limits<T>::lowest());
 
   std::vector<size_t> indices(dims.size(), 0);
-  for (size_t flat_idx = 0; flat_idx < numel(); ++flat_idx) {
+  for (size_t i = 0; i < numel(); ++i) {
     std::vector<size_t> result_indices;
-    for (size_t i = 0; i < dims.size(); ++i) {
-      if (i != dim) result_indices.push_back(indices[i]);
+    for (size_t d = 0; d < dims.size(); ++d) {
+      if (d != dim) result_indices.push_back(indices[d]);
     }
     if (result_indices.empty()) result_indices.push_back(0);
 
     size_t result_flat = 0;
     size_t result_stride = 1;
-    for (int i = static_cast<int>(result_indices.size()) - 1; i >= 0; --i) {
-      result_flat += result_indices[i] * result_stride;
-      result_stride *= new_dims[i];
+    for (int d = static_cast<int>(result_indices.size()) - 1; d >= 0; --d) {
+      result_flat += result_indices[d] * result_stride;
+      result_stride *= new_dims[d];
     }
 
-    if (data_[flat_idx] > max_vals[result_flat]) {
-      max_vals[result_flat] = data_[flat_idx];
+    T v = at(indices);
+    if (v > max_vals[result_flat]) {
+      max_vals[result_flat] = v;
       result.data()[result_flat] = indices[dim];
     }
 
-    for (int i = static_cast<int>(dims.size()) - 1; i >= 0; --i) {
-      indices[i]++;
-      if (indices[i] < dims[i]) break;
-      indices[i] = 0;
+    for (int d = static_cast<int>(dims.size()) - 1; d >= 0; --d) {
+      if (++indices[d] < dims[d]) break;
+      indices[d] = 0;
     }
   }
 
@@ -1109,29 +1362,29 @@ Tensor<size_t> Tensor<T>::argmin(size_t dim) const {
   std::vector<T> min_vals(result.numel(), std::numeric_limits<T>::max());
 
   std::vector<size_t> indices(dims.size(), 0);
-  for (size_t flat_idx = 0; flat_idx < numel(); ++flat_idx) {
+  for (size_t i = 0; i < numel(); ++i) {
     std::vector<size_t> result_indices;
-    for (size_t i = 0; i < dims.size(); ++i) {
-      if (i != dim) result_indices.push_back(indices[i]);
+    for (size_t d = 0; d < dims.size(); ++d) {
+      if (d != dim) result_indices.push_back(indices[d]);
     }
     if (result_indices.empty()) result_indices.push_back(0);
 
     size_t result_flat = 0;
     size_t result_stride = 1;
-    for (int i = static_cast<int>(result_indices.size()) - 1; i >= 0; --i) {
-      result_flat += result_indices[i] * result_stride;
-      result_stride *= new_dims[i];
+    for (int d = static_cast<int>(result_indices.size()) - 1; d >= 0; --d) {
+      result_flat += result_indices[d] * result_stride;
+      result_stride *= new_dims[d];
     }
 
-    if (data_[flat_idx] < min_vals[result_flat]) {
-      min_vals[result_flat] = data_[flat_idx];
+    T v = at(indices);
+    if (v < min_vals[result_flat]) {
+      min_vals[result_flat] = v;
       result.data()[result_flat] = indices[dim];
     }
 
-    for (int i = static_cast<int>(dims.size()) - 1; i >= 0; --i) {
-      indices[i]++;
-      if (indices[i] < dims[i]) break;
-      indices[i] = 0;
+    for (int d = static_cast<int>(dims.size()) - 1; d >= 0; --d) {
+      if (++indices[d] < dims[d]) break;
+      indices[d] = 0;
     }
   }
 
@@ -1298,29 +1551,26 @@ Tensor<T> Tensor<T>::softmax(size_t dim) const {
   // Compute max along dimension for numerical stability
   Tensor<T> max_vals = max(dim, true);
   Tensor<T> result(shape_);
+  T* r_data = result.data();
 
-  // Compute exp(x - max) and sum
-  std::vector<size_t> strides = compute_strides();
-
-  // Copy data and subtract max, then exp
+  // Compute exp(x - max)
   std::vector<size_t> indices(dims.size(), 0);
   for (size_t flat_idx = 0; flat_idx < numel(); ++flat_idx) {
     // Get max value for this position
     std::vector<size_t> max_indices;
-    for (size_t i = 0; i < dims.size(); ++i) {
-      if (i == dim) {
+    for (size_t d = 0; d < dims.size(); ++d) {
+      if (d == dim) {
         max_indices.push_back(0);
       } else {
-        max_indices.push_back(indices[i]);
+        max_indices.push_back(indices[d]);
       }
     }
     T max_val = max_vals.at(max_indices);
-    result.data_[flat_idx] = std::exp(data_[flat_idx] - max_val);
+    r_data[flat_idx] = std::exp(at(indices) - max_val);
 
-    for (int i = static_cast<int>(dims.size()) - 1; i >= 0; --i) {
-      indices[i]++;
-      if (indices[i] < dims[i]) break;
-      indices[i] = 0;
+    for (int d = static_cast<int>(dims.size()) - 1; d >= 0; --d) {
+      if (++indices[d] < dims[d]) break;
+      indices[d] = 0;
     }
   }
 
@@ -1330,19 +1580,18 @@ Tensor<T> Tensor<T>::softmax(size_t dim) const {
   std::fill(indices.begin(), indices.end(), 0);
   for (size_t flat_idx = 0; flat_idx < numel(); ++flat_idx) {
     std::vector<size_t> sum_indices;
-    for (size_t i = 0; i < dims.size(); ++i) {
-      if (i == dim) {
+    for (size_t d = 0; d < dims.size(); ++d) {
+      if (d == dim) {
         sum_indices.push_back(0);
       } else {
-        sum_indices.push_back(indices[i]);
+        sum_indices.push_back(indices[d]);
       }
     }
-    result.data_[flat_idx] /= sum_vals.at(sum_indices);
+    r_data[flat_idx] /= sum_vals.at(sum_indices);
 
-    for (int i = static_cast<int>(dims.size()) - 1; i >= 0; --i) {
-      indices[i]++;
-      if (indices[i] < dims[i]) break;
-      indices[i] = 0;
+    for (int d = static_cast<int>(dims.size()) - 1; d >= 0; --d) {
+      if (++indices[d] < dims[d]) break;
+      indices[d] = 0;
     }
   }
 
@@ -1365,6 +1614,7 @@ Tensor<T> Tensor<T>::layer_norm(const Tensor<T>& weight, const Tensor<T>& bias,
   }
 
   Tensor<T> result(shape_);
+  T* r_data = result.data();
 
   // Compute mean along last dimension
   Tensor<T> mean_vals = mean(norm_dim, true);
@@ -1374,41 +1624,41 @@ Tensor<T> Tensor<T>::layer_norm(const Tensor<T>& weight, const Tensor<T>& bias,
   Tensor<T> var_vals = Tensor<T>::zeros(mean_vals.shape());
 
   std::vector<size_t> indices(ndim(), 0);
-  for (size_t flat_idx = 0; flat_idx < numel(); ++flat_idx) {
+  for (size_t i = 0; i < numel(); ++i) {
     std::vector<size_t> mean_indices;
-    for (size_t i = 0; i < ndim(); ++i) {
-      if (i == norm_dim) {
+    for (size_t d = 0; d < ndim(); ++d) {
+      if (d == norm_dim) {
         mean_indices.push_back(0);
       } else {
-        mean_indices.push_back(indices[i]);
+        mean_indices.push_back(indices[d]);
       }
     }
 
     T mean_val = mean_vals.at(mean_indices);
-    T diff = data_[flat_idx] - mean_val;
+    T diff = at(indices) - mean_val;
     var_vals.at(mean_indices) += diff * diff;
 
-    for (int i = static_cast<int>(ndim()) - 1; i >= 0; --i) {
-      indices[i]++;
-      if (indices[i] < shape_[i]) break;
-      indices[i] = 0;
+    for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+      if (++indices[d] < shape_[d]) break;
+      indices[d] = 0;
     }
   }
 
   // Divide by norm_size to get variance
+  T* var_data = var_vals.data();
   for (size_t i = 0; i < var_vals.numel(); ++i) {
-    var_vals.data()[i] /= static_cast<T>(norm_size);
+    var_data[i] /= static_cast<T>(norm_size);
   }
 
   // Normalize: (x - mean) / sqrt(var + eps) * weight + bias
   std::fill(indices.begin(), indices.end(), 0);
   for (size_t flat_idx = 0; flat_idx < numel(); ++flat_idx) {
     std::vector<size_t> stat_indices;
-    for (size_t i = 0; i < ndim(); ++i) {
-      if (i == norm_dim) {
+    for (size_t d = 0; d < ndim(); ++d) {
+      if (d == norm_dim) {
         stat_indices.push_back(0);
       } else {
-        stat_indices.push_back(indices[i]);
+        stat_indices.push_back(indices[d]);
       }
     }
 
@@ -1416,15 +1666,14 @@ Tensor<T> Tensor<T>::layer_norm(const Tensor<T>& weight, const Tensor<T>& bias,
     T mean_val = mean_vals.at(stat_indices);
     size_t weight_idx = indices[norm_dim];
 
-    result.data_[flat_idx] = (data_[flat_idx] - mean_val) /
-                                 std::sqrt(var_val + eps) *
-                                 weight.data()[weight_idx] +
-                             bias.data()[weight_idx];
+    r_data[flat_idx] = (at(indices) - mean_val) /
+                       std::sqrt(var_val + eps) *
+                       weight.data()[weight_idx] +
+                       bias.data()[weight_idx];
 
-    for (int i = static_cast<int>(ndim()) - 1; i >= 0; --i) {
-      indices[i]++;
-      if (indices[i] < shape_[i]) break;
-      indices[i] = 0;
+    for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+      if (++indices[d] < shape_[d]) break;
+      indices[d] = 0;
     }
   }
 
@@ -1440,12 +1689,14 @@ Tensor<T> Tensor<T>::rms_norm(const Tensor<T>& weight, T eps) const {
 
   size_t norm_dim = ndim() - 1;
   size_t norm_size = shape_[norm_dim];
+  (void)norm_size;  // Suppress unused warning
 
-  if (weight.numel() != norm_size) {
+  if (weight.numel() != shape_[norm_dim]) {
     throw std::runtime_error("Weight size must match last dimension");
   }
 
   Tensor<T> result(shape_);
+  T* r_data = result.data();
 
   // Compute mean of squares along last dimension
   Tensor<T> sq = (*this) * (*this);
@@ -1455,11 +1706,11 @@ Tensor<T> Tensor<T>::rms_norm(const Tensor<T>& weight, T eps) const {
   std::vector<size_t> indices(ndim(), 0);
   for (size_t flat_idx = 0; flat_idx < numel(); ++flat_idx) {
     std::vector<size_t> rms_indices;
-    for (size_t i = 0; i < ndim(); ++i) {
-      if (i == norm_dim) {
+    for (size_t d = 0; d < ndim(); ++d) {
+      if (d == norm_dim) {
         rms_indices.push_back(0);
       } else {
-        rms_indices.push_back(indices[i]);
+        rms_indices.push_back(indices[d]);
       }
     }
 
@@ -1467,12 +1718,11 @@ Tensor<T> Tensor<T>::rms_norm(const Tensor<T>& weight, T eps) const {
     T rms = std::sqrt(mean_sq_val + eps);
     size_t weight_idx = indices[norm_dim];
 
-    result.data_[flat_idx] = data_[flat_idx] / rms * weight.data()[weight_idx];
+    r_data[flat_idx] = at(indices) / rms * weight.data()[weight_idx];
 
-    for (int i = static_cast<int>(ndim()) - 1; i >= 0; --i) {
-      indices[i]++;
-      if (indices[i] < shape_[i]) break;
-      indices[i] = 0;
+    for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+      if (++indices[d] < shape_[d]) break;
+      indices[d] = 0;
     }
   }
 
@@ -1482,13 +1732,35 @@ Tensor<T> Tensor<T>::rms_norm(const Tensor<T>& weight, T eps) const {
 // Utility functions
 template <typename T>
 void Tensor<T>::fill(const T& value) {
-  std::fill(data_.begin(), data_.end(), value);
+  const auto& dims = shape_.dims();
+  std::vector<size_t> indices(ndim(), 0);
+  for (size_t i = 0; i < numel(); ++i) {
+    at(indices) = value;
+    for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+      if (++indices[d] < dims[d]) break;
+      indices[d] = 0;
+    }
+  }
 }
 
 template <typename T>
 Tensor<T> Tensor<T>::clone() const {
   Tensor<T> result(shape_);
-  std::copy(data_.begin(), data_.end(), result.data_.begin());
+  T* r_data = result.data();
+  if (is_contiguous()) {
+    const T* src = data();
+    std::copy(src, src + numel(), r_data);
+  } else {
+    const auto& dims = shape_.dims();
+    std::vector<size_t> indices(ndim(), 0);
+    for (size_t i = 0; i < numel(); ++i) {
+      r_data[i] = at(indices);
+      for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+        if (++indices[d] < dims[d]) break;
+        indices[d] = 0;
+      }
+    }
+  }
   return result;
 }
 
@@ -1541,6 +1813,7 @@ Tensor<T> Tensor<T>::concat(const std::vector<Tensor<T>>& tensors, size_t dim) {
   std::vector<size_t> result_dims = first_shape.dims();
   result_dims[dim] = total_concat_size;
   Tensor<T> result{Shape(result_dims)};
+  T* r_data = result.data();
 
   // Compute strides for the result tensor
   std::vector<size_t> result_strides(ndim);
@@ -1557,17 +1830,9 @@ Tensor<T> Tensor<T>::concat(const std::vector<Tensor<T>>& tensors, size_t dim) {
     const auto& src_dims = src.shape().dims();
     size_t src_concat_size = src_dims[dim];
 
-    // Compute source strides
-    std::vector<size_t> src_strides(ndim);
-    size_t src_stride = 1;
-    for (int i = static_cast<int>(ndim) - 1; i >= 0; --i) {
-      src_strides[i] = src_stride;
-      src_stride *= src_dims[i];
-    }
-
-    // Iterate over all elements in source tensor
+    // Iterate over all elements in source tensor using strided access
     std::vector<size_t> indices(ndim, 0);
-    for (size_t flat_idx = 0; flat_idx < src.numel(); ++flat_idx) {
+    for (size_t i = 0; i < src.numel(); ++i) {
       // Compute destination index (offset the concat dimension)
       size_t dst_flat = 0;
       for (size_t d = 0; d < ndim; ++d) {
@@ -1578,13 +1843,12 @@ Tensor<T> Tensor<T>::concat(const std::vector<Tensor<T>>& tensors, size_t dim) {
         dst_flat += idx * result_strides[d];
       }
 
-      result.data_[dst_flat] = src.data_[flat_idx];
+      r_data[dst_flat] = src.at(indices);
 
       // Increment indices
-      for (int i = static_cast<int>(ndim) - 1; i >= 0; --i) {
-        indices[i]++;
-        if (indices[i] < src_dims[i]) break;
-        indices[i] = 0;
+      for (int d = static_cast<int>(ndim) - 1; d >= 0; --d) {
+        if (++indices[d] < src_dims[d]) break;
+        indices[d] = 0;
       }
     }
 
@@ -1597,10 +1861,110 @@ Tensor<T> Tensor<T>::concat(const std::vector<Tensor<T>>& tensors, size_t dim) {
 template <typename T>
 Tensor<T> Tensor<T>::apply(std::function<T(T)> func) const {
   Tensor<T> result(shape_);
-  for (size_t i = 0; i < numel(); ++i) {
-    result.data_[i] = func(data_[i]);
+  T* r_data = result.data();
+  if (is_contiguous()) {
+    const T* src = data();
+    for (size_t i = 0; i < numel(); ++i) {
+      r_data[i] = func(src[i]);
+    }
+  } else {
+    const auto& dims = shape_.dims();
+    std::vector<size_t> indices(ndim(), 0);
+    for (size_t i = 0; i < numel(); ++i) {
+      r_data[i] = func(at(indices));
+      for (int d = static_cast<int>(ndim()) - 1; d >= 0; --d) {
+        if (++indices[d] < dims[d]) break;
+        indices[d] = 0;
+      }
+    }
   }
   return result;
+}
+
+// RoPE (Rotary Position Embedding) implementation
+// Applies rotation to pairs of elements based on position
+template <typename T>
+Tensor<T> Tensor<T>::rope(size_t start_pos, T base) const {
+  // Tensor should have at least 2 dimensions: [..., seq_len, head_dim]
+  if (ndim() < 2) {
+    throw std::runtime_error("RoPE requires at least 2D tensor");
+  }
+
+  // RoPE requires contiguous layout for efficient access
+  if (!is_contiguous()) {
+    return contiguous().rope(start_pos, base);
+  }
+
+  size_t head_dim = shape_[ndim() - 1];
+  size_t seq_len = shape_[ndim() - 2];
+
+  if (head_dim % 2 != 0) {
+    throw std::runtime_error("RoPE requires even head_dim");
+  }
+
+  Tensor<T> result(shape_);
+  const T* src_data = data();
+  T* r_data = result.data();
+
+  // Compute inverse frequencies: 1 / (base^(2i/d)) for i in [0, head_dim/2)
+  std::vector<T> inv_freq(head_dim / 2);
+  for (size_t i = 0; i < head_dim / 2; ++i) {
+    T exp = static_cast<T>(2 * i) / static_cast<T>(head_dim);
+    inv_freq[i] = T(1) / std::pow(base, exp);
+  }
+
+  // Number of "instances" (batch * heads or whatever comes before seq_len)
+  size_t outer_size = numel() / (seq_len * head_dim);
+
+  // Apply rotation to each position
+  for (size_t outer = 0; outer < outer_size; ++outer) {
+    size_t outer_offset = outer * seq_len * head_dim;
+
+    for (size_t pos = 0; pos < seq_len; ++pos) {
+      size_t abs_pos = start_pos + pos;
+      size_t pos_offset = outer_offset + pos * head_dim;
+
+      // Apply rotation to pairs of elements
+      for (size_t i = 0; i < head_dim / 2; ++i) {
+        T theta = static_cast<T>(abs_pos) * inv_freq[i];
+        T cos_theta = std::cos(theta);
+        T sin_theta = std::sin(theta);
+
+        // Get the pair of values
+        T x0 = src_data[pos_offset + i];
+        T x1 = src_data[pos_offset + i + head_dim / 2];
+
+        // Apply rotation: [cos, -sin; sin, cos] @ [x0, x1]
+        r_data[pos_offset + i] = x0 * cos_theta - x1 * sin_theta;
+        r_data[pos_offset + i + head_dim / 2] = x0 * sin_theta + x1 * cos_theta;
+      }
+    }
+  }
+
+  return result;
+}
+
+// Causal mask: mask[i,j] = 0 if j <= i + offset, else -inf
+// offset = total_len - seq_len
+template <typename T>
+Tensor<T> Tensor<T>::causal_mask(size_t seq_len, size_t total_len) {
+  Tensor<T> mask(Shape({seq_len, total_len}));
+  size_t offset = total_len - seq_len;
+
+  for (size_t i = 0; i < seq_len; ++i) {
+    for (size_t j = 0; j < total_len; ++j) {
+      // Allow attention to positions j where j <= i + offset
+      // i.e., j <= i + (total_len - seq_len)
+      // which means j - (total_len - seq_len) <= i
+      if (j <= i + offset) {
+        mask(i, j) = T(0);
+      } else {
+        mask(i, j) = -std::numeric_limits<T>::infinity();
+      }
+    }
+  }
+
+  return mask;
 }
 
 // Free function operators for scalar on left side
