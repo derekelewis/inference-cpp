@@ -28,6 +28,10 @@ class Shape {
   bool operator==(const Shape& other) const;
   bool operator!=(const Shape& other) const;
 
+  // Broadcasting support
+  static bool can_broadcast(const Shape& a, const Shape& b);
+  static Shape broadcast_shape(const Shape& a, const Shape& b);
+
  private:
   std::vector<size_t> dims_;
 };
@@ -146,6 +150,10 @@ class Tensor {
   // Helper functions
   size_t compute_flat_index(const std::vector<size_t>& indices) const;
   std::vector<size_t> compute_strides() const;
+
+  // Broadcasting helper
+  template <typename Op>
+  Tensor<T> broadcast_op(const Tensor<T>& other, Op op) const;
 };
 
 // ============================================================================
@@ -184,6 +192,40 @@ inline bool Shape::operator==(const Shape& other) const {
 
 inline bool Shape::operator!=(const Shape& other) const {
   return !(*this == other);
+}
+
+inline bool Shape::can_broadcast(const Shape& a, const Shape& b) {
+  const auto& a_dims = a.dims();
+  const auto& b_dims = b.dims();
+  size_t max_ndim = std::max(a_dims.size(), b_dims.size());
+
+  for (size_t i = 0; i < max_ndim; ++i) {
+    size_t a_dim = (i < a_dims.size()) ? a_dims[a_dims.size() - 1 - i] : 1;
+    size_t b_dim = (i < b_dims.size()) ? b_dims[b_dims.size() - 1 - i] : 1;
+    if (a_dim != b_dim && a_dim != 1 && b_dim != 1) {
+      return false;
+    }
+  }
+  return true;
+}
+
+inline Shape Shape::broadcast_shape(const Shape& a, const Shape& b) {
+  if (!can_broadcast(a, b)) {
+    throw std::runtime_error("Shapes cannot be broadcast together");
+  }
+
+  const auto& a_dims = a.dims();
+  const auto& b_dims = b.dims();
+  size_t max_ndim = std::max(a_dims.size(), b_dims.size());
+  std::vector<size_t> result_dims(max_ndim);
+
+  for (size_t i = 0; i < max_ndim; ++i) {
+    size_t a_dim = (i < a_dims.size()) ? a_dims[a_dims.size() - 1 - i] : 1;
+    size_t b_dim = (i < b_dims.size()) ? b_dims[b_dims.size() - 1 - i] : 1;
+    result_dims[max_ndim - 1 - i] = std::max(a_dim, b_dim);
+  }
+
+  return Shape(result_dims);
 }
 
 // ============================================================================
@@ -508,53 +550,106 @@ Tensor<T> Tensor<T>::contiguous() const {
   return clone();
 }
 
-// Element-wise operations
+// Broadcasting helper
+template <typename T>
+template <typename Op>
+Tensor<T> Tensor<T>::broadcast_op(const Tensor<T>& other, Op op) const {
+  // Fast path: shapes are identical
+  if (shape_ == other.shape_) {
+    Tensor<T> result(shape_);
+    for (size_t i = 0; i < numel(); ++i) {
+      result.data_[i] = op(data_[i], other.data_[i]);
+    }
+    return result;
+  }
+
+  // Check if shapes can be broadcast
+  if (!Shape::can_broadcast(shape_, other.shape_)) {
+    throw std::runtime_error("Shapes cannot be broadcast together");
+  }
+
+  // Compute broadcast shape
+  Shape result_shape = Shape::broadcast_shape(shape_, other.shape_);
+  Tensor<T> result(result_shape);
+
+  const auto& result_dims = result_shape.dims();
+  const auto& a_dims = shape_.dims();
+  const auto& b_dims = other.shape_.dims();
+  size_t result_ndim = result_dims.size();
+
+  // Compute strides for result tensor
+  std::vector<size_t> result_strides(result_ndim);
+  size_t stride = 1;
+  for (int i = static_cast<int>(result_ndim) - 1; i >= 0; --i) {
+    result_strides[i] = stride;
+    stride *= result_dims[i];
+  }
+
+  // Compute strides for input tensors (with broadcasting: 0 for broadcast dims)
+  std::vector<size_t> a_strides(result_ndim, 0);
+  std::vector<size_t> b_strides(result_ndim, 0);
+
+  size_t a_stride = 1;
+  for (int i = static_cast<int>(a_dims.size()) - 1; i >= 0; --i) {
+    size_t result_idx = result_ndim - a_dims.size() + i;
+    if (a_dims[i] != 1) {
+      a_strides[result_idx] = a_stride;
+    }
+    a_stride *= a_dims[i];
+  }
+
+  size_t b_stride = 1;
+  for (int i = static_cast<int>(b_dims.size()) - 1; i >= 0; --i) {
+    size_t result_idx = result_ndim - b_dims.size() + i;
+    if (b_dims[i] != 1) {
+      b_strides[result_idx] = b_stride;
+    }
+    b_stride *= b_dims[i];
+  }
+
+  // Iterate over result tensor
+  std::vector<size_t> indices(result_ndim, 0);
+  for (size_t flat_idx = 0; flat_idx < result.numel(); ++flat_idx) {
+    // Compute flat indices for a and b using broadcast strides
+    size_t a_flat = 0;
+    size_t b_flat = 0;
+    for (size_t d = 0; d < result_ndim; ++d) {
+      a_flat += indices[d] * a_strides[d];
+      b_flat += indices[d] * b_strides[d];
+    }
+
+    result.data_[flat_idx] = op(data_[a_flat], other.data_[b_flat]);
+
+    // Increment indices
+    for (int i = static_cast<int>(result_ndim) - 1; i >= 0; --i) {
+      indices[i]++;
+      if (indices[i] < result_dims[i]) break;
+      indices[i] = 0;
+    }
+  }
+
+  return result;
+}
+
+// Element-wise operations with broadcasting support
 template <typename T>
 Tensor<T> Tensor<T>::operator+(const Tensor<T>& other) const {
-  if (shape_ != other.shape_) {
-    throw std::runtime_error("Tensor shapes must match for addition");
-  }
-  Tensor<T> result(shape_);
-  for (size_t i = 0; i < numel(); ++i) {
-    result.data_[i] = data_[i] + other.data_[i];
-  }
-  return result;
+  return broadcast_op(other, [](T a, T b) { return a + b; });
 }
 
 template <typename T>
 Tensor<T> Tensor<T>::operator-(const Tensor<T>& other) const {
-  if (shape_ != other.shape_) {
-    throw std::runtime_error("Tensor shapes must match for subtraction");
-  }
-  Tensor<T> result(shape_);
-  for (size_t i = 0; i < numel(); ++i) {
-    result.data_[i] = data_[i] - other.data_[i];
-  }
-  return result;
+  return broadcast_op(other, [](T a, T b) { return a - b; });
 }
 
 template <typename T>
 Tensor<T> Tensor<T>::operator*(const Tensor<T>& other) const {
-  if (shape_ != other.shape_) {
-    throw std::runtime_error("Tensor shapes must match for multiplication");
-  }
-  Tensor<T> result(shape_);
-  for (size_t i = 0; i < numel(); ++i) {
-    result.data_[i] = data_[i] * other.data_[i];
-  }
-  return result;
+  return broadcast_op(other, [](T a, T b) { return a * b; });
 }
 
 template <typename T>
 Tensor<T> Tensor<T>::operator/(const Tensor<T>& other) const {
-  if (shape_ != other.shape_) {
-    throw std::runtime_error("Tensor shapes must match for division");
-  }
-  Tensor<T> result(shape_);
-  for (size_t i = 0; i < numel(); ++i) {
-    result.data_[i] = data_[i] / other.data_[i];
-  }
-  return result;
+  return broadcast_op(other, [](T a, T b) { return a / b; });
 }
 
 template <typename T>

@@ -883,3 +883,246 @@ TEST(TensorEdgeCaseTest, HighDimensionalTensor) {
   EXPECT_EQ(t.numel(), 720u);
   EXPECT_EQ(t.ndim(), 5u);
 }
+
+// ============================================================================
+// Broadcasting Tests
+// ============================================================================
+
+TEST(BroadcastingTest, CanBroadcastSameShape) {
+  Shape a({2, 3, 4});
+  Shape b({2, 3, 4});
+  EXPECT_TRUE(Shape::can_broadcast(a, b));
+}
+
+TEST(BroadcastingTest, CanBroadcastScalar) {
+  Shape a({2, 3, 4});
+  Shape b({1});
+  EXPECT_TRUE(Shape::can_broadcast(a, b));
+}
+
+TEST(BroadcastingTest, CanBroadcastTrailingDims) {
+  Shape a({2, 3, 4});
+  Shape b({4});
+  EXPECT_TRUE(Shape::can_broadcast(a, b));
+}
+
+TEST(BroadcastingTest, CanBroadcastMiddleDim) {
+  Shape a({2, 3, 4});
+  Shape b({1, 3, 1});
+  EXPECT_TRUE(Shape::can_broadcast(a, b));
+}
+
+TEST(BroadcastingTest, CanBroadcastDifferentNdim) {
+  Shape a({3, 4});
+  Shape b({2, 3, 4});
+  EXPECT_TRUE(Shape::can_broadcast(a, b));
+}
+
+TEST(BroadcastingTest, CannotBroadcastIncompatible) {
+  Shape a({2, 3});
+  Shape b({4, 3});
+  EXPECT_FALSE(Shape::can_broadcast(a, b));
+}
+
+TEST(BroadcastingTest, BroadcastShapeSame) {
+  Shape a({2, 3, 4});
+  Shape b({2, 3, 4});
+  Shape result = Shape::broadcast_shape(a, b);
+  EXPECT_EQ(result[0], 2u);
+  EXPECT_EQ(result[1], 3u);
+  EXPECT_EQ(result[2], 4u);
+}
+
+TEST(BroadcastingTest, BroadcastShapeExpand) {
+  Shape a({2, 1, 4});
+  Shape b({1, 3, 4});
+  Shape result = Shape::broadcast_shape(a, b);
+  EXPECT_EQ(result[0], 2u);
+  EXPECT_EQ(result[1], 3u);
+  EXPECT_EQ(result[2], 4u);
+}
+
+TEST(BroadcastingTest, BroadcastShapeDifferentNdim) {
+  Shape a({4});
+  Shape b({2, 3, 4});
+  Shape result = Shape::broadcast_shape(a, b);
+  EXPECT_EQ(result.ndim(), 3u);
+  EXPECT_EQ(result[0], 2u);
+  EXPECT_EQ(result[1], 3u);
+  EXPECT_EQ(result[2], 4u);
+}
+
+TEST(BroadcastingTest, AddScalarBroadcast) {
+  // (2, 3) + (1,) -> (2, 3)
+  Tensor<float> a(Shape({2, 3}), 2.0f);
+  Tensor<float> b(Shape({1}), 3.0f);
+  Tensor<float> result = a + b;
+
+  EXPECT_EQ(result.shape()[0], 2u);
+  EXPECT_EQ(result.shape()[1], 3u);
+  for (size_t i = 0; i < result.numel(); ++i) {
+    EXPECT_FLOAT_EQ(result(i), 5.0f);
+  }
+}
+
+TEST(BroadcastingTest, AddRowBroadcast) {
+  // (2, 3) + (3,) -> (2, 3)
+  std::vector<float> a_data = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+  std::vector<float> b_data = {10.0f, 20.0f, 30.0f};
+  Tensor<float> a(Shape({2, 3}), a_data);
+  Tensor<float> b(Shape({3}), b_data);
+  Tensor<float> result = a + b;
+
+  EXPECT_EQ(result.shape()[0], 2u);
+  EXPECT_EQ(result.shape()[1], 3u);
+  EXPECT_FLOAT_EQ(result(0, 0), 11.0f);
+  EXPECT_FLOAT_EQ(result(0, 1), 22.0f);
+  EXPECT_FLOAT_EQ(result(0, 2), 33.0f);
+  EXPECT_FLOAT_EQ(result(1, 0), 14.0f);
+  EXPECT_FLOAT_EQ(result(1, 1), 25.0f);
+  EXPECT_FLOAT_EQ(result(1, 2), 36.0f);
+}
+
+TEST(BroadcastingTest, AddColumnBroadcast) {
+  // (2, 3) + (2, 1) -> (2, 3)
+  std::vector<float> a_data = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+  std::vector<float> b_data = {10.0f, 20.0f};
+  Tensor<float> a(Shape({2, 3}), a_data);
+  Tensor<float> b(Shape({2, 1}), b_data);
+  Tensor<float> result = a + b;
+
+  EXPECT_EQ(result.shape()[0], 2u);
+  EXPECT_EQ(result.shape()[1], 3u);
+  EXPECT_FLOAT_EQ(result(0, 0), 11.0f);
+  EXPECT_FLOAT_EQ(result(0, 1), 12.0f);
+  EXPECT_FLOAT_EQ(result(0, 2), 13.0f);
+  EXPECT_FLOAT_EQ(result(1, 0), 24.0f);
+  EXPECT_FLOAT_EQ(result(1, 1), 25.0f);
+  EXPECT_FLOAT_EQ(result(1, 2), 26.0f);
+}
+
+TEST(BroadcastingTest, AddExpandBothDims) {
+  // (2, 1) + (1, 3) -> (2, 3)
+  std::vector<float> a_data = {1.0f, 2.0f};
+  std::vector<float> b_data = {10.0f, 20.0f, 30.0f};
+  Tensor<float> a(Shape({2, 1}), a_data);
+  Tensor<float> b(Shape({1, 3}), b_data);
+  Tensor<float> result = a + b;
+
+  EXPECT_EQ(result.shape()[0], 2u);
+  EXPECT_EQ(result.shape()[1], 3u);
+  EXPECT_FLOAT_EQ(result(0, 0), 11.0f);
+  EXPECT_FLOAT_EQ(result(0, 1), 21.0f);
+  EXPECT_FLOAT_EQ(result(0, 2), 31.0f);
+  EXPECT_FLOAT_EQ(result(1, 0), 12.0f);
+  EXPECT_FLOAT_EQ(result(1, 1), 22.0f);
+  EXPECT_FLOAT_EQ(result(1, 2), 32.0f);
+}
+
+TEST(BroadcastingTest, SubBroadcast) {
+  Tensor<float> a(Shape({2, 3}), 10.0f);
+  Tensor<float> b(Shape({3}), 1.0f);
+  Tensor<float> result = a - b;
+
+  for (size_t i = 0; i < result.numel(); ++i) {
+    EXPECT_FLOAT_EQ(result(i), 9.0f);
+  }
+}
+
+TEST(BroadcastingTest, MulBroadcast) {
+  std::vector<float> a_data = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+  std::vector<float> b_data = {2.0f, 3.0f, 4.0f};
+  Tensor<float> a(Shape({2, 3}), a_data);
+  Tensor<float> b(Shape({3}), b_data);
+  Tensor<float> result = a * b;
+
+  EXPECT_FLOAT_EQ(result(0, 0), 2.0f);
+  EXPECT_FLOAT_EQ(result(0, 1), 6.0f);
+  EXPECT_FLOAT_EQ(result(0, 2), 12.0f);
+  EXPECT_FLOAT_EQ(result(1, 0), 8.0f);
+  EXPECT_FLOAT_EQ(result(1, 1), 15.0f);
+  EXPECT_FLOAT_EQ(result(1, 2), 24.0f);
+}
+
+TEST(BroadcastingTest, DivBroadcast) {
+  Tensor<float> a(Shape({2, 3}), 12.0f);
+  std::vector<float> b_data = {1.0f, 2.0f, 3.0f};
+  Tensor<float> b(Shape({3}), b_data);
+  Tensor<float> result = a / b;
+
+  EXPECT_FLOAT_EQ(result(0, 0), 12.0f);
+  EXPECT_FLOAT_EQ(result(0, 1), 6.0f);
+  EXPECT_FLOAT_EQ(result(0, 2), 4.0f);
+  EXPECT_FLOAT_EQ(result(1, 0), 12.0f);
+  EXPECT_FLOAT_EQ(result(1, 1), 6.0f);
+  EXPECT_FLOAT_EQ(result(1, 2), 4.0f);
+}
+
+TEST(BroadcastingTest, Broadcast3D) {
+  // (2, 3, 4) + (4,) -> (2, 3, 4)
+  Tensor<float> a(Shape({2, 3, 4}), 1.0f);
+  std::vector<float> b_data = {1.0f, 2.0f, 3.0f, 4.0f};
+  Tensor<float> b(Shape({4}), b_data);
+  Tensor<float> result = a + b;
+
+  EXPECT_EQ(result.ndim(), 3u);
+  EXPECT_EQ(result.shape()[0], 2u);
+  EXPECT_EQ(result.shape()[1], 3u);
+  EXPECT_EQ(result.shape()[2], 4u);
+
+  // Check a few values
+  EXPECT_FLOAT_EQ(result(0, 0, 0), 2.0f);
+  EXPECT_FLOAT_EQ(result(0, 0, 1), 3.0f);
+  EXPECT_FLOAT_EQ(result(0, 0, 2), 4.0f);
+  EXPECT_FLOAT_EQ(result(0, 0, 3), 5.0f);
+}
+
+TEST(BroadcastingTest, Broadcast4DBatchHeads) {
+  // Simulating attention mask broadcast: (batch, heads, seq, seq) + (1, 1, seq, seq)
+  Tensor<float> a(Shape({2, 4, 3, 3}), 1.0f);
+  Tensor<float> mask(Shape({1, 1, 3, 3}), 0.5f);
+  Tensor<float> result = a + mask;
+
+  EXPECT_EQ(result.shape()[0], 2u);
+  EXPECT_EQ(result.shape()[1], 4u);
+  EXPECT_EQ(result.shape()[2], 3u);
+  EXPECT_EQ(result.shape()[3], 3u);
+
+  for (size_t i = 0; i < result.numel(); ++i) {
+    EXPECT_FLOAT_EQ(result(i), 1.5f);
+  }
+}
+
+TEST(BroadcastingTest, BroadcastBias) {
+  // Simulating bias addition: (batch, seq, hidden) + (hidden,)
+  Tensor<float> a(Shape({2, 5, 8}), 1.0f);
+  Tensor<float> bias(Shape({8}), 0.1f);
+  Tensor<float> result = a + bias;
+
+  EXPECT_EQ(result.shape()[0], 2u);
+  EXPECT_EQ(result.shape()[1], 5u);
+  EXPECT_EQ(result.shape()[2], 8u);
+
+  for (size_t i = 0; i < result.numel(); ++i) {
+    EXPECT_FLOAT_EQ(result(i), 1.1f);
+  }
+}
+
+TEST(BroadcastingTest, IncompatibleShapesThrow) {
+  Tensor<float> a(Shape({2, 3}));
+  Tensor<float> b(Shape({4, 3}));
+  EXPECT_THROW(a + b, std::runtime_error);
+}
+
+TEST(BroadcastingTest, SameShapeFastPath) {
+  // Test that same-shape operations still work (fast path)
+  Tensor<float> a(Shape({2, 3}), 1.0f);
+  Tensor<float> b(Shape({2, 3}), 2.0f);
+  Tensor<float> result = a + b;
+
+  EXPECT_EQ(result.shape()[0], 2u);
+  EXPECT_EQ(result.shape()[1], 3u);
+  for (size_t i = 0; i < result.numel(); ++i) {
+    EXPECT_FLOAT_EQ(result(i), 3.0f);
+  }
+}
