@@ -1316,3 +1316,166 @@ TEST(BroadcastMatmulTest, Matmul4DIncompatibleBatchThrows) {
 
   EXPECT_THROW(a.matmul(b), std::runtime_error);
 }
+
+// ============================================================================
+// Concat Tests
+// ============================================================================
+
+TEST(ConcatTest, Concat1DBasic) {
+  Tensor<float> a(Shape({3}), std::vector<float>{1.0f, 2.0f, 3.0f});
+  Tensor<float> b(Shape({2}), std::vector<float>{4.0f, 5.0f});
+
+  Tensor<float> result = Tensor<float>::concat({a, b}, 0);
+
+  EXPECT_EQ(result.shape()[0], 5u);
+  EXPECT_FLOAT_EQ(result(0), 1.0f);
+  EXPECT_FLOAT_EQ(result(1), 2.0f);
+  EXPECT_FLOAT_EQ(result(2), 3.0f);
+  EXPECT_FLOAT_EQ(result(3), 4.0f);
+  EXPECT_FLOAT_EQ(result(4), 5.0f);
+}
+
+TEST(ConcatTest, Concat2DDim0) {
+  // Concat along rows (dim 0)
+  Tensor<float> a(Shape({2, 3}), std::vector<float>{1, 2, 3, 4, 5, 6});
+  Tensor<float> b(Shape({1, 3}), std::vector<float>{7, 8, 9});
+
+  Tensor<float> result = Tensor<float>::concat({a, b}, 0);
+
+  EXPECT_EQ(result.shape()[0], 3u);
+  EXPECT_EQ(result.shape()[1], 3u);
+
+  // Row 0: 1, 2, 3
+  EXPECT_FLOAT_EQ(result(0, 0), 1.0f);
+  EXPECT_FLOAT_EQ(result(0, 1), 2.0f);
+  EXPECT_FLOAT_EQ(result(0, 2), 3.0f);
+  // Row 1: 4, 5, 6
+  EXPECT_FLOAT_EQ(result(1, 0), 4.0f);
+  EXPECT_FLOAT_EQ(result(1, 1), 5.0f);
+  EXPECT_FLOAT_EQ(result(1, 2), 6.0f);
+  // Row 2: 7, 8, 9
+  EXPECT_FLOAT_EQ(result(2, 0), 7.0f);
+  EXPECT_FLOAT_EQ(result(2, 1), 8.0f);
+  EXPECT_FLOAT_EQ(result(2, 2), 9.0f);
+}
+
+TEST(ConcatTest, Concat2DDim1) {
+  // Concat along columns (dim 1)
+  Tensor<float> a(Shape({2, 2}), std::vector<float>{1, 2, 3, 4});
+  Tensor<float> b(Shape({2, 3}), std::vector<float>{5, 6, 7, 8, 9, 10});
+
+  Tensor<float> result = Tensor<float>::concat({a, b}, 1);
+
+  EXPECT_EQ(result.shape()[0], 2u);
+  EXPECT_EQ(result.shape()[1], 5u);
+
+  // Row 0: 1, 2, 5, 6, 7
+  EXPECT_FLOAT_EQ(result(0, 0), 1.0f);
+  EXPECT_FLOAT_EQ(result(0, 1), 2.0f);
+  EXPECT_FLOAT_EQ(result(0, 2), 5.0f);
+  EXPECT_FLOAT_EQ(result(0, 3), 6.0f);
+  EXPECT_FLOAT_EQ(result(0, 4), 7.0f);
+  // Row 1: 3, 4, 8, 9, 10
+  EXPECT_FLOAT_EQ(result(1, 0), 3.0f);
+  EXPECT_FLOAT_EQ(result(1, 1), 4.0f);
+  EXPECT_FLOAT_EQ(result(1, 2), 8.0f);
+  EXPECT_FLOAT_EQ(result(1, 3), 9.0f);
+  EXPECT_FLOAT_EQ(result(1, 4), 10.0f);
+}
+
+TEST(ConcatTest, Concat3DSeqDim) {
+  // Simulating KV cache concat: (batch, heads, seq, dim)
+  // Concat along sequence dimension (dim 2 in 4D, but testing 3D here)
+  Tensor<float> cached(Shape({2, 3, 4}), 1.0f);  // batch=2, seq=3, dim=4
+  Tensor<float> new_kv(Shape({2, 1, 4}), 2.0f);  // new token
+
+  Tensor<float> result = Tensor<float>::concat({cached, new_kv}, 1);
+
+  EXPECT_EQ(result.shape()[0], 2u);
+  EXPECT_EQ(result.shape()[1], 4u);  // 3 + 1 = 4
+  EXPECT_EQ(result.shape()[2], 4u);
+
+  // Check cached values
+  EXPECT_FLOAT_EQ(result(0, 0, 0), 1.0f);
+  EXPECT_FLOAT_EQ(result(0, 2, 3), 1.0f);
+
+  // Check new values at seq position 3
+  EXPECT_FLOAT_EQ(result(0, 3, 0), 2.0f);
+  EXPECT_FLOAT_EQ(result(1, 3, 3), 2.0f);
+}
+
+TEST(ConcatTest, Concat4DKVCache) {
+  // Full KV cache scenario: (batch, num_kv_heads, seq, head_dim)
+  Tensor<float> cached_k(Shape({1, 8, 5, 64}), 1.0f);  // 5 cached tokens
+  Tensor<float> new_k(Shape({1, 8, 1, 64}), 2.0f);     // 1 new token
+
+  Tensor<float> result = Tensor<float>::concat({cached_k, new_k}, 2);
+
+  EXPECT_EQ(result.shape()[0], 1u);
+  EXPECT_EQ(result.shape()[1], 8u);
+  EXPECT_EQ(result.shape()[2], 6u);  // 5 + 1 = 6
+  EXPECT_EQ(result.shape()[3], 64u);
+
+  // Verify cached tokens preserved
+  EXPECT_FLOAT_EQ(result(0, 0, 0, 0), 1.0f);
+  EXPECT_FLOAT_EQ(result(0, 7, 4, 63), 1.0f);
+
+  // Verify new token added
+  EXPECT_FLOAT_EQ(result(0, 0, 5, 0), 2.0f);
+  EXPECT_FLOAT_EQ(result(0, 7, 5, 63), 2.0f);
+}
+
+TEST(ConcatTest, ConcatMultipleTensors) {
+  Tensor<float> a(Shape({2}), std::vector<float>{1.0f, 2.0f});
+  Tensor<float> b(Shape({2}), std::vector<float>{3.0f, 4.0f});
+  Tensor<float> c(Shape({2}), std::vector<float>{5.0f, 6.0f});
+
+  Tensor<float> result = Tensor<float>::concat({a, b, c}, 0);
+
+  EXPECT_EQ(result.shape()[0], 6u);
+  EXPECT_FLOAT_EQ(result(0), 1.0f);
+  EXPECT_FLOAT_EQ(result(1), 2.0f);
+  EXPECT_FLOAT_EQ(result(2), 3.0f);
+  EXPECT_FLOAT_EQ(result(3), 4.0f);
+  EXPECT_FLOAT_EQ(result(4), 5.0f);
+  EXPECT_FLOAT_EQ(result(5), 6.0f);
+}
+
+TEST(ConcatTest, ConcatSingleTensor) {
+  Tensor<float> a(Shape({2, 3}), 1.0f);
+
+  Tensor<float> result = Tensor<float>::concat({a}, 0);
+
+  EXPECT_EQ(result.shape()[0], 2u);
+  EXPECT_EQ(result.shape()[1], 3u);
+  for (size_t i = 0; i < result.numel(); ++i) {
+    EXPECT_FLOAT_EQ(result(i), 1.0f);
+  }
+}
+
+TEST(ConcatTest, ConcatEmptyListThrows) {
+  std::vector<Tensor<float>> empty;
+  EXPECT_THROW(Tensor<float>::concat(empty, 0), std::runtime_error);
+}
+
+TEST(ConcatTest, ConcatDimOutOfRangeThrows) {
+  Tensor<float> a(Shape({2, 3}));
+  Tensor<float> b(Shape({2, 3}));
+
+  EXPECT_THROW(Tensor<float>::concat({a, b}, 2), std::runtime_error);
+}
+
+TEST(ConcatTest, ConcatMismatchedNdimThrows) {
+  Tensor<float> a(Shape({2, 3}));
+  Tensor<float> b(Shape({2, 3, 4}));
+
+  EXPECT_THROW(Tensor<float>::concat({a, b}, 0), std::runtime_error);
+}
+
+TEST(ConcatTest, ConcatMismatchedShapeThrows) {
+  // Different shape on non-concat dimension
+  Tensor<float> a(Shape({2, 3}));
+  Tensor<float> b(Shape({2, 4}));  // 4 != 3 on dim 1
+
+  EXPECT_THROW(Tensor<float>::concat({a, b}, 0), std::runtime_error);
+}

@@ -139,6 +139,7 @@ class Tensor {
   static Tensor<T> zeros(const Shape& s);
   static Tensor<T> ones(const Shape& s);
   static Tensor<T> full(const Shape& s, const T& value);
+  static Tensor<T> concat(const std::vector<Tensor<T>>& tensors, size_t dim);
 
   // Apply function element-wise
   Tensor<T> apply(std::function<T(T)> func) const;
@@ -1502,6 +1503,93 @@ Tensor<T> Tensor<T>::ones(const Shape& s) {
 template <typename T>
 Tensor<T> Tensor<T>::full(const Shape& s, const T& value) {
   return Tensor<T>(s, value);
+}
+
+template <typename T>
+Tensor<T> Tensor<T>::concat(const std::vector<Tensor<T>>& tensors, size_t dim) {
+  if (tensors.empty()) {
+    throw std::runtime_error("Cannot concatenate empty tensor list");
+  }
+
+  const Shape& first_shape = tensors[0].shape();
+  size_t ndim = first_shape.ndim();
+
+  if (dim >= ndim) {
+    throw std::runtime_error("Concatenation dimension out of range");
+  }
+
+  // Validate all tensors have same shape except along concat dimension
+  size_t total_concat_size = first_shape[dim];
+  for (size_t t = 1; t < tensors.size(); ++t) {
+    const Shape& s = tensors[t].shape();
+    if (s.ndim() != ndim) {
+      throw std::runtime_error(
+          "All tensors must have the same number of dimensions");
+    }
+    for (size_t d = 0; d < ndim; ++d) {
+      if (d != dim && s[d] != first_shape[d]) {
+        throw std::runtime_error(
+            "All tensors must have the same shape except along concat dimension");
+      }
+    }
+    total_concat_size += s[dim];
+  }
+
+  // Create result shape
+  std::vector<size_t> result_dims = first_shape.dims();
+  result_dims[dim] = total_concat_size;
+  Tensor<T> result{Shape(result_dims)};
+
+  // Compute strides for the result tensor
+  std::vector<size_t> result_strides(ndim);
+  size_t stride = 1;
+  for (int i = static_cast<int>(ndim) - 1; i >= 0; --i) {
+    result_strides[i] = stride;
+    stride *= result_dims[i];
+  }
+
+  // Copy data from each tensor
+  size_t concat_offset = 0;
+  for (size_t t = 0; t < tensors.size(); ++t) {
+    const Tensor<T>& src = tensors[t];
+    const auto& src_dims = src.shape().dims();
+    size_t src_concat_size = src_dims[dim];
+
+    // Compute source strides
+    std::vector<size_t> src_strides(ndim);
+    size_t src_stride = 1;
+    for (int i = static_cast<int>(ndim) - 1; i >= 0; --i) {
+      src_strides[i] = src_stride;
+      src_stride *= src_dims[i];
+    }
+
+    // Iterate over all elements in source tensor
+    std::vector<size_t> indices(ndim, 0);
+    for (size_t flat_idx = 0; flat_idx < src.numel(); ++flat_idx) {
+      // Compute destination index (offset the concat dimension)
+      size_t dst_flat = 0;
+      for (size_t d = 0; d < ndim; ++d) {
+        size_t idx = indices[d];
+        if (d == dim) {
+          idx += concat_offset;
+        }
+        dst_flat += idx * result_strides[d];
+      }
+
+      result.data_[dst_flat] = src.data_[flat_idx];
+
+      // Increment indices
+      for (int i = static_cast<int>(ndim) - 1; i >= 0; --i) {
+        indices[i]++;
+        if (indices[i] < src_dims[i]) break;
+        indices[i] = 0;
+      }
+    }
+
+    concat_offset += src_concat_size;
+  }
+
+  return result;
 }
 
 template <typename T>
