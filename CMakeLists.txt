@@ -10,6 +10,9 @@ include(FetchContent)
 FetchContent_Declare(json URL https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz)
 FetchContent_MakeAvailable(json)
 
+# ICU library (system-installed)
+find_package(ICU REQUIRED COMPONENTS uc i18n)
+
 # Google Test
 FetchContent_Declare(
   googletest
@@ -30,10 +33,15 @@ add_executable(inference-cpp
     src/qwen3.cpp
     src/safetensors.cpp
     src/tensor.cpp
+    src/tokenizer.cpp
 )
 
 target_compile_options(inference-cpp PRIVATE -Wall -Wextra -Wpedantic)
-target_link_libraries(inference-cpp PRIVATE nlohmann_json::nlohmann_json)
+target_link_libraries(inference-cpp PRIVATE
+    nlohmann_json::nlohmann_json
+    ICU::uc
+    ICU::i18n
+)
 target_include_directories(inference-cpp PRIVATE src)
 
 # Tests
@@ -75,8 +83,24 @@ target_link_libraries(qwen3_tests PRIVATE
     nlohmann_json::nlohmann_json
 )
 
+add_executable(tokenizer_tests
+    tests/tokenizer_test.cpp
+    src/tokenizer.cpp
+)
+
+target_compile_options(tokenizer_tests PRIVATE -Wall -Wextra -Wpedantic)
+target_include_directories(tokenizer_tests PRIVATE src)
+target_link_libraries(tokenizer_tests PRIVATE
+    GTest::gtest_main
+    nlohmann_json::nlohmann_json
+    ICU::uc
+    ICU::i18n
+)
+
 include(GoogleTest)
 gtest_discover_tests(tensor_tests)
 gtest_discover_tests(safetensor_tests)
 # Run qwen3_tests as single test to share model loading across tests
 add_test(NAME qwen3_tests COMMAND qwen3_tests)
+# Run tokenizer_tests as single test to share tokenizer loading across tests
+add_test(NAME tokenizer_tests COMMAND tokenizer_tests)
