@@ -1223,28 +1223,54 @@ Tensor<T> Tensor<T>::layer_norm(const Tensor<T>& weight, const Tensor<T>& bias,
 
   Tensor<T> result(shape_);
 
-  // Compute mean and variance along last dimension
+  // Compute mean along last dimension
   Tensor<T> mean_vals = mean(norm_dim, true);
-  Tensor<T> centered = *this - mean_vals.reshape(shape_);
 
-  // Compute variance
-  Tensor<T> sq = centered * centered;
-  Tensor<T> var = sq.mean(norm_dim, true);
+  // Compute variance: E[(x - mean)^2]
+  // We need to compute this without broadcasting, so do it element by element
+  Tensor<T> var_vals = Tensor<T>::zeros(mean_vals.shape());
 
-  // Normalize
   std::vector<size_t> indices(ndim(), 0);
   for (size_t flat_idx = 0; flat_idx < numel(); ++flat_idx) {
-    std::vector<size_t> var_indices;
+    std::vector<size_t> mean_indices;
     for (size_t i = 0; i < ndim(); ++i) {
       if (i == norm_dim) {
-        var_indices.push_back(0);
+        mean_indices.push_back(0);
       } else {
-        var_indices.push_back(indices[i]);
+        mean_indices.push_back(indices[i]);
       }
     }
 
-    T var_val = var.at(var_indices);
-    T mean_val = mean_vals.at(var_indices);
+    T mean_val = mean_vals.at(mean_indices);
+    T diff = data_[flat_idx] - mean_val;
+    var_vals.at(mean_indices) += diff * diff;
+
+    for (int i = static_cast<int>(ndim()) - 1; i >= 0; --i) {
+      indices[i]++;
+      if (indices[i] < shape_[i]) break;
+      indices[i] = 0;
+    }
+  }
+
+  // Divide by norm_size to get variance
+  for (size_t i = 0; i < var_vals.numel(); ++i) {
+    var_vals.data()[i] /= static_cast<T>(norm_size);
+  }
+
+  // Normalize: (x - mean) / sqrt(var + eps) * weight + bias
+  std::fill(indices.begin(), indices.end(), 0);
+  for (size_t flat_idx = 0; flat_idx < numel(); ++flat_idx) {
+    std::vector<size_t> stat_indices;
+    for (size_t i = 0; i < ndim(); ++i) {
+      if (i == norm_dim) {
+        stat_indices.push_back(0);
+      } else {
+        stat_indices.push_back(indices[i]);
+      }
+    }
+
+    T var_val = var_vals.at(stat_indices);
+    T mean_val = mean_vals.at(stat_indices);
     size_t weight_idx = indices[norm_dim];
 
     result.data_[flat_idx] = (data_[flat_idx] - mean_val) /
