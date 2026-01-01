@@ -13,6 +13,9 @@ FetchContent_MakeAvailable(json)
 # ICU library (system-installed)
 find_package(ICU REQUIRED COMPONENTS uc i18n)
 
+# OpenMP for parallel computation
+find_package(OpenMP REQUIRED)
+
 # Google Test
 FetchContent_Declare(
   googletest
@@ -41,6 +44,7 @@ target_link_libraries(inference-cpp PRIVATE
     nlohmann_json::nlohmann_json
     ICU::uc
     ICU::i18n
+    OpenMP::OpenMP_CXX
 )
 target_include_directories(inference-cpp PRIVATE src)
 
@@ -54,7 +58,7 @@ add_executable(tensor_tests
 
 target_compile_options(tensor_tests PRIVATE -Wall -Wextra -Wpedantic)
 target_include_directories(tensor_tests PRIVATE src)
-target_link_libraries(tensor_tests PRIVATE GTest::gtest_main)
+target_link_libraries(tensor_tests PRIVATE GTest::gtest_main OpenMP::OpenMP_CXX)
 
 add_executable(safetensor_tests
     tests/safetensor_test.cpp
@@ -67,6 +71,7 @@ target_include_directories(safetensor_tests PRIVATE src)
 target_link_libraries(safetensor_tests PRIVATE
     GTest::gtest_main
     nlohmann_json::nlohmann_json
+    OpenMP::OpenMP_CXX
 )
 
 add_executable(qwen3_tests
@@ -81,6 +86,7 @@ target_include_directories(qwen3_tests PRIVATE src)
 target_link_libraries(qwen3_tests PRIVATE
     GTest::gtest_main
     nlohmann_json::nlohmann_json
+    OpenMP::OpenMP_CXX
 )
 
 # Forward pass tests (slow, requires model, run separately)
@@ -96,6 +102,7 @@ target_include_directories(qwen3_forward_tests PRIVATE src)
 target_link_libraries(qwen3_forward_tests PRIVATE
     GTest::gtest_main
     nlohmann_json::nlohmann_json
+    OpenMP::OpenMP_CXX
 )
 
 add_executable(tokenizer_tests
