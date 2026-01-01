@@ -5,9 +5,11 @@
 #include <cmath>
 #include <functional>
 #include <initializer_list>
+#include <iomanip>
 #include <limits>
 #include <memory>
 #include <numeric>
+#include <ostream>
 #include <stdexcept>
 #include <vector>
 
@@ -1628,4 +1630,62 @@ Tensor<T> operator/(const T& scalar, const Tensor<T>& tensor) {
     result.data()[i] = scalar / tensor.data()[i];
   }
   return result;
+}
+
+// Stream output operator
+template <typename T>
+std::ostream& operator<<(std::ostream& os, const Tensor<T>& tensor) {
+  const auto& dims = tensor.shape().dims();
+  size_t ndim = dims.size();
+
+  // Print shape
+  os << "Tensor(shape=[";
+  for (size_t i = 0; i < ndim; ++i) {
+    os << dims[i];
+    if (i < ndim - 1) os << ", ";
+  }
+  os << "], data=";
+
+  if (tensor.numel() == 0) {
+    os << "[])";
+    return os;
+  }
+
+  // For large dimensions, only show first and last few elements
+  constexpr size_t max_display = 8;
+
+  // Helper to recursively print tensor structure
+  std::function<void(size_t, std::vector<size_t>&)> print_recursive;
+  print_recursive = [&](size_t dim, std::vector<size_t>& indices) {
+    os << "[";
+    size_t size = dims[dim];
+    bool dim_truncate = size > max_display;
+
+    for (size_t i = 0; i < size; ++i) {
+      // Truncate middle elements for large dimensions
+      if (dim_truncate && i == max_display / 2 && size > max_display) {
+        os << "...";
+        i = size - max_display / 2 - 1;
+        if (i + 1 < size) os << ", ";
+        continue;
+      }
+
+      indices[dim] = i;
+      if (dim == ndim - 1) {
+        // Leaf level - print the value
+        os << std::setprecision(4) << tensor.at(indices);
+      } else {
+        // Recurse to next dimension
+        print_recursive(dim + 1, indices);
+      }
+      if (i < size - 1) os << ", ";
+    }
+    os << "]";
+  };
+
+  std::vector<size_t> indices(ndim, 0);
+  print_recursive(0, indices);
+  os << ")";
+
+  return os;
 }
