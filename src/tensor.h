@@ -1135,7 +1135,8 @@ Tensor<size_t> Tensor<T>::argmin(size_t dim) const {
   return result;
 }
 
-// Matrix multiplication
+// Matrix multiplication with broadcasting support for batch dimensions
+// Supports GQA (Grouped-Query Attention) where num_q_heads > num_kv_heads
 template <typename T>
 Tensor<T> Tensor<T>::matmul(const Tensor<T>& other) const {
   // Handle 2D matrix multiplication
@@ -1163,26 +1164,37 @@ Tensor<T> Tensor<T>::matmul(const Tensor<T>& other) const {
     return result;
   }
 
-  // Handle batched matrix multiplication (batch, m, k) x (batch, k, n)
+  // Handle batched matrix multiplication with broadcasting
+  // (batch1, m, k) x (batch2, k, n) -> (max(batch1,batch2), m, n)
   if (ndim() == 3 && other.ndim() == 3) {
-    size_t batch = shape_[0];
+    size_t batch1 = shape_[0];
+    size_t batch2 = other.shape_[0];
     size_t m = shape_[1];
     size_t k = shape_[2];
     size_t n = other.shape_[2];
 
-    if (batch != other.shape_[0] || k != other.shape_[1]) {
+    if (k != other.shape_[1]) {
       throw std::runtime_error(
           "Batched matrix dimensions don't match for multiplication");
     }
 
-    Tensor<T> result(Shape({batch, m, n}), T(0));
+    // Check batch dimension broadcasting
+    if (batch1 != batch2 && batch1 != 1 && batch2 != 1) {
+      throw std::runtime_error(
+          "Batch dimensions are not broadcastable");
+    }
 
-    for (size_t b = 0; b < batch; ++b) {
+    size_t batch_out = std::max(batch1, batch2);
+    Tensor<T> result(Shape({batch_out, m, n}), T(0));
+
+    for (size_t b = 0; b < batch_out; ++b) {
+      size_t b1 = (batch1 == 1) ? 0 : b;
+      size_t b2 = (batch2 == 1) ? 0 : b;
       for (size_t i = 0; i < m; ++i) {
         for (size_t j = 0; j < n; ++j) {
           T sum = T(0);
           for (size_t l = 0; l < k; ++l) {
-            sum += (*this)(b, i, l) * other(b, l, j);
+            sum += (*this)(b1, i, l) * other(b2, l, j);
           }
           result(b, i, j) = sum;
         }
@@ -1191,29 +1203,75 @@ Tensor<T> Tensor<T>::matmul(const Tensor<T>& other) const {
     return result;
   }
 
-  // Handle 4D batched matmul (batch, heads, seq, dim) x (batch, heads, dim, k)
+  // Handle 4D batched matmul with broadcasting for GQA
+  // (batch1, heads1, seq, dim) x (batch2, heads2, dim, k)
+  // Supports GQA where heads1 > heads2 and heads1 % heads2 == 0
   if (ndim() == 4 && other.ndim() == 4) {
-    size_t batch = shape_[0];
-    size_t heads = shape_[1];
+    size_t batch1 = shape_[0];
+    size_t batch2 = other.shape_[0];
+    size_t heads1 = shape_[1];
+    size_t heads2 = other.shape_[1];
     size_t m = shape_[2];
     size_t k = shape_[3];
     size_t n = other.shape_[3];
 
-    if (batch != other.shape_[0] || heads != other.shape_[1] ||
-        k != other.shape_[2]) {
+    if (k != other.shape_[2]) {
       throw std::runtime_error(
           "4D matrix dimensions don't match for multiplication");
     }
 
-    Tensor<T> result(Shape({batch, heads, m, n}), T(0));
+    // Check batch dimension broadcasting
+    if (batch1 != batch2 && batch1 != 1 && batch2 != 1) {
+      throw std::runtime_error(
+          "Batch dimensions are not broadcastable");
+    }
 
-    for (size_t b = 0; b < batch; ++b) {
-      for (size_t h = 0; h < heads; ++h) {
+    // Check heads dimension broadcasting (for GQA support)
+    // Allow: same heads, one is 1, or heads1 is multiple of heads2 (GQA)
+    bool heads_broadcastable = (heads1 == heads2) ||
+                                (heads1 == 1) ||
+                                (heads2 == 1) ||
+                                (heads1 > heads2 && heads1 % heads2 == 0) ||
+                                (heads2 > heads1 && heads2 % heads1 == 0);
+    if (!heads_broadcastable) {
+      throw std::runtime_error(
+          "Head dimensions are not broadcastable (for GQA, num_q_heads must be divisible by num_kv_heads)");
+    }
+
+    size_t batch_out = std::max(batch1, batch2);
+    size_t heads_out = std::max(heads1, heads2);
+    Tensor<T> result(Shape({batch_out, heads_out, m, n}), T(0));
+
+    for (size_t b = 0; b < batch_out; ++b) {
+      size_t b1 = (batch1 == 1) ? 0 : b;
+      size_t b2 = (batch2 == 1) ? 0 : b;
+      for (size_t h = 0; h < heads_out; ++h) {
+        // For GQA: map query head to corresponding KV head
+        size_t h1, h2;
+        if (heads1 == heads2) {
+          h1 = h;
+          h2 = h;
+        } else if (heads1 == 1) {
+          h1 = 0;
+          h2 = h;
+        } else if (heads2 == 1) {
+          h1 = h;
+          h2 = 0;
+        } else if (heads1 > heads2) {
+          // GQA: multiple query heads per KV head
+          h1 = h;
+          h2 = h / (heads1 / heads2);
+        } else {
+          // Reverse GQA (unusual but supported)
+          h1 = h / (heads2 / heads1);
+          h2 = h;
+        }
+
         for (size_t i = 0; i < m; ++i) {
           for (size_t j = 0; j < n; ++j) {
             T sum = T(0);
             for (size_t l = 0; l < k; ++l) {
-              sum += (*this)(b, h, i, l) * other(b, h, l, j);
+              sum += (*this)(b1, h1, i, l) * other(b2, h2, l, j);
             }
             result(b, h, i, j) = sum;
           }

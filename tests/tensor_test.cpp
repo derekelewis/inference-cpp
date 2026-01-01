@@ -1126,3 +1126,193 @@ TEST(BroadcastingTest, SameShapeFastPath) {
     EXPECT_FLOAT_EQ(result(i), 3.0f);
   }
 }
+
+// ============================================================================
+// Broadcast Matmul Tests (for GQA support)
+// ============================================================================
+
+TEST(BroadcastMatmulTest, Matmul3DBatchBroadcast) {
+  // (1, 2, 3) x (4, 3, 2) -> (4, 2, 2) - broadcast batch dim
+  Tensor<float> a(Shape({1, 2, 3}), 1.0f);
+  Tensor<float> b(Shape({4, 3, 2}), 1.0f);
+  Tensor<float> result = a.matmul(b);
+
+  EXPECT_EQ(result.shape()[0], 4u);
+  EXPECT_EQ(result.shape()[1], 2u);
+  EXPECT_EQ(result.shape()[2], 2u);
+
+  // Each element should be sum of 3 ones = 3.0
+  for (size_t i = 0; i < result.numel(); ++i) {
+    EXPECT_FLOAT_EQ(result(i), 3.0f);
+  }
+}
+
+TEST(BroadcastMatmulTest, Matmul3DBatchBroadcastReverse) {
+  // (4, 2, 3) x (1, 3, 2) -> (4, 2, 2) - broadcast batch dim (reverse)
+  Tensor<float> a(Shape({4, 2, 3}), 1.0f);
+  Tensor<float> b(Shape({1, 3, 2}), 1.0f);
+  Tensor<float> result = a.matmul(b);
+
+  EXPECT_EQ(result.shape()[0], 4u);
+  EXPECT_EQ(result.shape()[1], 2u);
+  EXPECT_EQ(result.shape()[2], 2u);
+
+  for (size_t i = 0; i < result.numel(); ++i) {
+    EXPECT_FLOAT_EQ(result(i), 3.0f);
+  }
+}
+
+TEST(BroadcastMatmulTest, Matmul4DSameHeads) {
+  // Standard case: same batch and heads
+  // (2, 4, 3, 5) x (2, 4, 5, 2) -> (2, 4, 3, 2)
+  Tensor<float> a(Shape({2, 4, 3, 5}), 1.0f);
+  Tensor<float> b(Shape({2, 4, 5, 2}), 1.0f);
+  Tensor<float> result = a.matmul(b);
+
+  EXPECT_EQ(result.shape()[0], 2u);
+  EXPECT_EQ(result.shape()[1], 4u);
+  EXPECT_EQ(result.shape()[2], 3u);
+  EXPECT_EQ(result.shape()[3], 2u);
+
+  for (size_t i = 0; i < result.numel(); ++i) {
+    EXPECT_FLOAT_EQ(result(i), 5.0f);
+  }
+}
+
+TEST(BroadcastMatmulTest, Matmul4DGQABasic) {
+  // GQA: 4 query heads, 2 KV heads (4 % 2 == 0)
+  // (1, 4, 2, 3) x (1, 2, 3, 2) -> (1, 4, 2, 2)
+  // Heads 0,1 use KV head 0; Heads 2,3 use KV head 1
+  Tensor<float> q(Shape({1, 4, 2, 3}), 1.0f);
+
+  // Create KV with different values per head so we can verify mapping
+  std::vector<float> kv_data(1 * 2 * 3 * 2, 0.0f);
+  // Head 0: fill with 1.0
+  for (size_t i = 0; i < 3 * 2; ++i) kv_data[i] = 1.0f;
+  // Head 1: fill with 2.0
+  for (size_t i = 3 * 2; i < 2 * 3 * 2; ++i) kv_data[i] = 2.0f;
+  Tensor<float> kv(Shape({1, 2, 3, 2}), kv_data);
+
+  Tensor<float> result = q.matmul(kv);
+
+  EXPECT_EQ(result.shape()[0], 1u);
+  EXPECT_EQ(result.shape()[1], 4u);
+  EXPECT_EQ(result.shape()[2], 2u);
+  EXPECT_EQ(result.shape()[3], 2u);
+
+  // Heads 0,1 should use KV head 0 (values 1.0) -> result = 3.0
+  // Heads 2,3 should use KV head 1 (values 2.0) -> result = 6.0
+  EXPECT_FLOAT_EQ(result(0, 0, 0, 0), 3.0f);
+  EXPECT_FLOAT_EQ(result(0, 1, 0, 0), 3.0f);
+  EXPECT_FLOAT_EQ(result(0, 2, 0, 0), 6.0f);
+  EXPECT_FLOAT_EQ(result(0, 3, 0, 0), 6.0f);
+}
+
+TEST(BroadcastMatmulTest, Matmul4DGQAQwen3Config) {
+  // Qwen3-4B config: 32 query heads, 8 KV heads
+  // (batch=1, 32 heads, seq=2, head_dim=4) x (batch=1, 8 heads, head_dim=4, seq=2)
+  Tensor<float> q(Shape({1, 32, 2, 4}), 1.0f);
+  Tensor<float> k(Shape({1, 8, 4, 2}), 1.0f);
+
+  Tensor<float> result = q.matmul(k);
+
+  EXPECT_EQ(result.shape()[0], 1u);
+  EXPECT_EQ(result.shape()[1], 32u);
+  EXPECT_EQ(result.shape()[2], 2u);
+  EXPECT_EQ(result.shape()[3], 2u);
+
+  // Each result element = sum of 4 ones = 4.0
+  for (size_t i = 0; i < result.numel(); ++i) {
+    EXPECT_FLOAT_EQ(result(i), 4.0f);
+  }
+}
+
+TEST(BroadcastMatmulTest, Matmul4DGQAHeadMapping) {
+  // Test that head mapping is correct for GQA
+  // 8 query heads, 2 KV heads -> 4 query heads per KV head
+  Tensor<float> q(Shape({1, 8, 1, 2}), 1.0f);
+
+  // KV head 0: value 1.0, KV head 1: value 3.0
+  std::vector<float> kv_data = {
+      1.0f, 1.0f,  // head 0
+      3.0f, 3.0f   // head 1
+  };
+  Tensor<float> kv(Shape({1, 2, 2, 1}), kv_data);
+
+  Tensor<float> result = q.matmul(kv);
+
+  EXPECT_EQ(result.shape()[0], 1u);
+  EXPECT_EQ(result.shape()[1], 8u);
+  EXPECT_EQ(result.shape()[2], 1u);
+  EXPECT_EQ(result.shape()[3], 1u);
+
+  // Q heads 0-3 use KV head 0 -> 1+1 = 2
+  // Q heads 4-7 use KV head 1 -> 3+3 = 6
+  EXPECT_FLOAT_EQ(result(0, 0, 0, 0), 2.0f);
+  EXPECT_FLOAT_EQ(result(0, 1, 0, 0), 2.0f);
+  EXPECT_FLOAT_EQ(result(0, 2, 0, 0), 2.0f);
+  EXPECT_FLOAT_EQ(result(0, 3, 0, 0), 2.0f);
+  EXPECT_FLOAT_EQ(result(0, 4, 0, 0), 6.0f);
+  EXPECT_FLOAT_EQ(result(0, 5, 0, 0), 6.0f);
+  EXPECT_FLOAT_EQ(result(0, 6, 0, 0), 6.0f);
+  EXPECT_FLOAT_EQ(result(0, 7, 0, 0), 6.0f);
+}
+
+TEST(BroadcastMatmulTest, Matmul4DBatchBroadcast) {
+  // Broadcast batch dimension in 4D matmul
+  // (1, 2, 2, 3) x (4, 2, 3, 2) -> (4, 2, 2, 2)
+  Tensor<float> a(Shape({1, 2, 2, 3}), 1.0f);
+  Tensor<float> b(Shape({4, 2, 3, 2}), 1.0f);
+  Tensor<float> result = a.matmul(b);
+
+  EXPECT_EQ(result.shape()[0], 4u);
+  EXPECT_EQ(result.shape()[1], 2u);
+  EXPECT_EQ(result.shape()[2], 2u);
+  EXPECT_EQ(result.shape()[3], 2u);
+
+  for (size_t i = 0; i < result.numel(); ++i) {
+    EXPECT_FLOAT_EQ(result(i), 3.0f);
+  }
+}
+
+TEST(BroadcastMatmulTest, Matmul4DHeadBroadcastSingle) {
+  // Single head broadcasts to all
+  // (2, 4, 2, 3) x (2, 1, 3, 2) -> (2, 4, 2, 2)
+  Tensor<float> a(Shape({2, 4, 2, 3}), 1.0f);
+  Tensor<float> b(Shape({2, 1, 3, 2}), 2.0f);
+  Tensor<float> result = a.matmul(b);
+
+  EXPECT_EQ(result.shape()[0], 2u);
+  EXPECT_EQ(result.shape()[1], 4u);
+  EXPECT_EQ(result.shape()[2], 2u);
+  EXPECT_EQ(result.shape()[3], 2u);
+
+  // 3 * (1*2) = 6.0
+  for (size_t i = 0; i < result.numel(); ++i) {
+    EXPECT_FLOAT_EQ(result(i), 6.0f);
+  }
+}
+
+TEST(BroadcastMatmulTest, Matmul4DIncompatibleHeadsThrows) {
+  // 5 query heads, 3 KV heads - not divisible
+  Tensor<float> q(Shape({1, 5, 2, 3}));
+  Tensor<float> kv(Shape({1, 3, 3, 2}));
+
+  EXPECT_THROW(q.matmul(kv), std::runtime_error);
+}
+
+TEST(BroadcastMatmulTest, Matmul3DIncompatibleBatchThrows) {
+  // Batch 2 and batch 3 are not broadcastable
+  Tensor<float> a(Shape({2, 2, 3}));
+  Tensor<float> b(Shape({3, 3, 2}));
+
+  EXPECT_THROW(a.matmul(b), std::runtime_error);
+}
+
+TEST(BroadcastMatmulTest, Matmul4DIncompatibleBatchThrows) {
+  // Batch 2 and batch 3 are not broadcastable
+  Tensor<float> a(Shape({2, 4, 2, 3}));
+  Tensor<float> b(Shape({3, 4, 3, 2}));
+
+  EXPECT_THROW(a.matmul(b), std::runtime_error);
+}

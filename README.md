@@ -33,7 +33,7 @@ ctest --output-on-failure
 1. Model layer loading into tensors (In Progress)
 2. `Qwen2Tokernizer` encode/decode (Not Started)
 3. `Tensor` and `Shape` class implementation (Complete)
-4. Unit tests (Complete - 88 tests)
+4. Unit tests (Complete - 120 tests)
 5. bfloat16 implementation (Not Started)
 
 ## Assumptions
