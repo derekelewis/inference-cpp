@@ -27,6 +27,7 @@ set(SOURCES src/main.cpp
 
 add_executable(inference-cpp
     src/main.cpp
+    src/qwen3.cpp
     src/safetensors.cpp
     src/tensor.cpp
 )
@@ -47,5 +48,35 @@ target_compile_options(tensor_tests PRIVATE -Wall -Wextra -Wpedantic)
 target_include_directories(tensor_tests PRIVATE src)
 target_link_libraries(tensor_tests PRIVATE GTest::gtest_main)
 
+add_executable(safetensor_tests
+    tests/safetensor_test.cpp
+    src/safetensors.cpp
+    src/tensor.cpp
+)
+
+target_compile_options(safetensor_tests PRIVATE -Wall -Wextra -Wpedantic)
+target_include_directories(safetensor_tests PRIVATE src)
+target_link_libraries(safetensor_tests PRIVATE
+    GTest::gtest_main
+    nlohmann_json::nlohmann_json
+)
+
+add_executable(qwen3_tests
+    tests/qwen3_test.cpp
+    src/qwen3.cpp
+    src/safetensors.cpp
+    src/tensor.cpp
+)
+
+target_compile_options(qwen3_tests PRIVATE -Wall -Wextra -Wpedantic)
+target_include_directories(qwen3_tests PRIVATE src)
+target_link_libraries(qwen3_tests PRIVATE
+    GTest::gtest_main
+    nlohmann_json::nlohmann_json
+)
+
 include(GoogleTest)
 gtest_discover_tests(tensor_tests)
+gtest_discover_tests(safetensor_tests)
+# Run qwen3_tests as single test to share model loading across tests
+add_test(NAME qwen3_tests COMMAND qwen3_tests)
