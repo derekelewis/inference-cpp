@@ -83,6 +83,21 @@ target_link_libraries(qwen3_tests PRIVATE
     nlohmann_json::nlohmann_json
 )
 
+# Forward pass tests (slow, requires model, run separately)
+add_executable(qwen3_forward_tests
+    tests/qwen3_forward_test.cpp
+    src/qwen3.cpp
+    src/safetensors.cpp
+    src/tensor.cpp
+)
+
+target_compile_options(qwen3_forward_tests PRIVATE -Wall -Wextra -Wpedantic)
+target_include_directories(qwen3_forward_tests PRIVATE src)
+target_link_libraries(qwen3_forward_tests PRIVATE
+    GTest::gtest_main
+    nlohmann_json::nlohmann_json
+)
+
 add_executable(tokenizer_tests
     tests/tokenizer_test.cpp
     src/tokenizer.cpp
@@ -104,3 +119,11 @@ gtest_discover_tests(safetensor_tests)
 add_test(NAME qwen3_tests COMMAND qwen3_tests)
 # Run tokenizer_tests as single test to share tokenizer loading across tests
 add_test(NAME tokenizer_tests COMMAND tokenizer_tests)
+
+# Forward pass tests - slow, requires model weights
+# Usage:
+#   ctest -E forward      # Run all tests EXCEPT forward tests (fast)
+#   ctest -L slow         # Run ONLY slow tests (forward tests)
+#   ./qwen3_forward_tests # Run forward tests directly
+add_test(NAME qwen3_forward_tests COMMAND qwen3_forward_tests)
+set_tests_properties(qwen3_forward_tests PROPERTIES LABELS "slow")

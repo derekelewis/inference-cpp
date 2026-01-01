@@ -2,41 +2,72 @@
 
 ## Overview
 
-`inference-cpp` is a project to implement a basic inferencing framework written in C++ (C++11). The goal is to be able to load supported models and their respective layers from one more or more .safetensors files associated with the model, tokenize input, perform a forward pass, and decode the output tokens.
+`inference-cpp` is a minimal LLM inference engine written in C++11. It loads models from safetensor files, tokenizes input, performs forward passes, and generates text.
 
-The target model to be implemented is Qwen2 -- more specifically, the `Qwen/Qwen3-4B-Instruct-2507` model.
+Currently supports the `Qwen/Qwen3-4B-Instruct-2507` model.
 
 ## Building
 
 ```bash
 mkdir -p build && cd build
-cmake ..
+cmake -DCMAKE_BUILD_TYPE=Release ..
 make -j4
+```
+
+## Usage
+
+```bash
+./inference-cpp <model_path> [prompt] [max_tokens]
+
+# Example
+./inference-cpp ~/.cache/huggingface/hub/models--Qwen--Qwen3-4B-Instruct-2507/snapshots/<hash> "Hello, I am" 20
 ```
 
 ## Running Tests
 
-Tests use Google Test framework and are automatically fetched during CMake configuration.
+Tests use Google Test framework (automatically fetched during CMake configuration).
 
 ```bash
-# Build and run all tests
 cd build
-make -j4
+
+# Fast tests only (~13 seconds, excludes slow forward pass tests)
+make -j4 && ctest -E forward --output-on-failure
+
+# All tests including forward pass (~3+ minutes, requires model)
 ctest --output-on-failure
 
-# Or run the test executable directly for more verbose output
-./tensor_tests
+# Forward pass tests only
+ctest -L slow --output-on-failure
+# OR
+./qwen3_forward_tests
 ```
 
 ## Status
 
-1. Model layer loading into tensors (In Progress)
-2. `Qwen2Tokernizer` encode/decode (Not Started)
-3. `Tensor` and `Shape` class implementation (Complete)
-4. Unit tests (Complete - 131 tests)
-5. bfloat16 implementation (Not Started)
+| Component | Status |
+|-----------|--------|
+| Safetensor loading | Complete |
+| BPE Tokenizer (encode/decode) | Complete |
+| Tensor operations | Complete |
+| RoPE (Rotary Position Embeddings) | Complete |
+| Grouped-Query Attention (GQA) | Complete |
+| KV Cache | Complete |
+| Forward pass | Complete |
+| Token generation | Complete |
+| Unit tests | 160 tests |
+
+## Architecture
+
+- **Tensor**: N-dimensional array with broadcasting, matmul, softmax, RMS norm, RoPE
+- **Tokenizer**: BPE tokenizer with Unicode normalization (ICU)
+- **Qwen3Model**: Transformer with GQA (32 Q heads, 8 KV heads), SiLU MLP, Q/K norms
+
+## Performance
+
+Current performance on CPU (single-threaded, no SIMD):
+- ~18 seconds per token (Qwen3-4B, Release build)
 
 ## Assumptions
 
-1. Treat .safetensor files as trusted inputs
-2. CPU decoding planned initially with plans to support CUDA and Metal after a forward pass with CPU can be completed.
+1. Safetensor files are treated as trusted inputs
+2. CPU inference only (CUDA/Metal planned for future)

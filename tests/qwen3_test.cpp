@@ -197,3 +197,4 @@ TEST_F(Qwen3ModelTest, ConfigValues) {
   EXPECT_EQ(config.num_attention_heads, 32u);
   EXPECT_EQ(config.num_key_value_heads, 8u);
 }
+
