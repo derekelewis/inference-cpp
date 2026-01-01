@@ -5,6 +5,10 @@
 #include <stdexcept>
 #include <string>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 #include "safetensors.h"
 
 Qwen3Model::Qwen3Model(const std::string& model_path) {
@@ -155,9 +159,11 @@ Tensor<float> Qwen3Model::attention(const Tensor<float>& hidden_states,
 
   // Apply Q/K normalization BEFORE RoPE (Qwen3 specific)
   // q_norm and k_norm are [head_dim] - apply per-head RMS norm
+
+  // Q norm: parallelize over batch, seq, and head dimensions
+#pragma omp parallel for collapse(3) schedule(static)
   for (size_t b = 0; b < batch; ++b) {
     for (size_t s = 0; s < seq_len; ++s) {
-      // Q norm per head
       for (size_t h = 0; h < num_heads; ++h) {
         float sum_sq = 0.0f;
         for (size_t d = 0; d < head_dim; ++d) {
@@ -169,7 +175,13 @@ Tensor<float> Qwen3Model::attention(const Tensor<float>& hidden_states,
           q(b, s, h, d) = (q(b, s, h, d) / rms) * attn.q_norm(d);
         }
       }
-      // K norm per head
+    }
+  }
+
+  // K norm: parallelize over batch, seq, and kv_head dimensions
+#pragma omp parallel for collapse(3) schedule(static)
+  for (size_t b = 0; b < batch; ++b) {
+    for (size_t s = 0; s < seq_len; ++s) {
       for (size_t h = 0; h < num_kv_heads; ++h) {
         float sum_sq = 0.0f;
         for (size_t d = 0; d < head_dim; ++d) {
@@ -236,6 +248,7 @@ Tensor<float> Qwen3Model::attention(const Tensor<float>& hidden_states,
   // Apply causal mask
   Tensor<float> mask = Tensor<float>::causal_mask(seq_len, total_len);
   // Broadcast mask to scores shape
+#pragma omp parallel for collapse(4) schedule(static)
   for (size_t b = 0; b < batch; ++b) {
     for (size_t h = 0; h < num_heads; ++h) {
       for (size_t i = 0; i < seq_len; ++i) {

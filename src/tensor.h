@@ -13,6 +13,10 @@
 #include <stdexcept>
 #include <vector>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 // ============================================================================
 // Shape class - represents tensor dimensions
 // ============================================================================
@@ -1408,6 +1412,7 @@ Tensor<T> Tensor<T>::matmul(const Tensor<T>& other) const {
 
     Tensor<T> result(Shape({m, n}), T(0));
 
+#pragma omp parallel for collapse(2) schedule(static)
     for (size_t i = 0; i < m; ++i) {
       for (size_t j = 0; j < n; ++j) {
         T sum = T(0);
@@ -1443,11 +1448,12 @@ Tensor<T> Tensor<T>::matmul(const Tensor<T>& other) const {
     size_t batch_out = std::max(batch1, batch2);
     Tensor<T> result(Shape({batch_out, m, n}), T(0));
 
+#pragma omp parallel for collapse(3) schedule(static)
     for (size_t b = 0; b < batch_out; ++b) {
-      size_t b1 = (batch1 == 1) ? 0 : b;
-      size_t b2 = (batch2 == 1) ? 0 : b;
       for (size_t i = 0; i < m; ++i) {
         for (size_t j = 0; j < n; ++j) {
+          size_t b1 = (batch1 == 1) ? 0 : b;
+          size_t b2 = (batch2 == 1) ? 0 : b;
           T sum = T(0);
           for (size_t l = 0; l < k; ++l) {
             sum += (*this)(b1, i, l) * other(b2, l, j);
@@ -1498,33 +1504,36 @@ Tensor<T> Tensor<T>::matmul(const Tensor<T>& other) const {
     size_t heads_out = std::max(heads1, heads2);
     Tensor<T> result(Shape({batch_out, heads_out, m, n}), T(0));
 
+#pragma omp parallel for collapse(4) schedule(static)
     for (size_t b = 0; b < batch_out; ++b) {
-      size_t b1 = (batch1 == 1) ? 0 : b;
-      size_t b2 = (batch2 == 1) ? 0 : b;
       for (size_t h = 0; h < heads_out; ++h) {
-        // For GQA: map query head to corresponding KV head
-        size_t h1, h2;
-        if (heads1 == heads2) {
-          h1 = h;
-          h2 = h;
-        } else if (heads1 == 1) {
-          h1 = 0;
-          h2 = h;
-        } else if (heads2 == 1) {
-          h1 = h;
-          h2 = 0;
-        } else if (heads1 > heads2) {
-          // GQA: multiple query heads per KV head
-          h1 = h;
-          h2 = h / (heads1 / heads2);
-        } else {
-          // Reverse GQA (unusual but supported)
-          h1 = h / (heads2 / heads1);
-          h2 = h;
-        }
-
         for (size_t i = 0; i < m; ++i) {
           for (size_t j = 0; j < n; ++j) {
+            // Compute indices inside loop for OpenMP collapse compatibility
+            size_t b1 = (batch1 == 1) ? 0 : b;
+            size_t b2 = (batch2 == 1) ? 0 : b;
+
+            // For GQA: map query head to corresponding KV head
+            size_t h1, h2;
+            if (heads1 == heads2) {
+              h1 = h;
+              h2 = h;
+            } else if (heads1 == 1) {
+              h1 = 0;
+              h2 = h;
+            } else if (heads2 == 1) {
+              h1 = h;
+              h2 = 0;
+            } else if (heads1 > heads2) {
+              // GQA: multiple query heads per KV head
+              h1 = h;
+              h2 = h / (heads1 / heads2);
+            } else {
+              // Reverse GQA (unusual but supported)
+              h1 = h / (heads2 / heads1);
+              h2 = h;
+            }
+
             T sum = T(0);
             for (size_t l = 0; l < k; ++l) {
               sum += (*this)(b1, h1, i, l) * other(b2, h2, l, j);

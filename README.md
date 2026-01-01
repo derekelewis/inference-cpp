@@ -8,6 +8,8 @@ Currently supports the `Qwen/Qwen3-4B-Instruct-2507` model.
 
 ## Building
 
+Requires: CMake 3.14+, C++11 compiler, ICU library, OpenMP
+
 ```bash
 mkdir -p build && cd build
 cmake -DCMAKE_BUILD_TYPE=Release ..
@@ -17,10 +19,21 @@ make -j4
 ## Usage
 
 ```bash
-./inference-cpp <model_path> [prompt] [max_tokens]
+./inference-cpp <model_path> [options]
 
-# Example
-./inference-cpp ~/.cache/huggingface/hub/models--Qwen--Qwen3-4B-Instruct-2507/snapshots/<hash> "Hello, I am" 20
+Options:
+  -p, --prompt <text>    Text prompt (default: "Hello, I am")
+  -n, --max-tokens <N>   Maximum tokens to generate (default: 20)
+  -t, --threads <N>      Number of threads (default: all cores)
+  -h, --help             Show help message
+
+# Examples
+./inference-cpp ~/.cache/huggingface/hub/models--Qwen--Qwen3-4B-Instruct-2507/snapshots/<hash>
+./inference-cpp <model_path> -t 8 -p "What is AI?" -n 50
+./inference-cpp <model_path> --threads 4 --prompt "Hello" --max-tokens 30
+
+# Legacy positional arguments also supported for backward compatibility
+./inference-cpp <model_path> "Hello, I am" 20
 ```
 
 ## Running Tests
@@ -54,7 +67,8 @@ ctest -L slow --output-on-failure
 | KV Cache | Complete |
 | Forward pass | Complete |
 | Token generation | Complete |
-| Unit tests | 160 tests |
+| OpenMP multithreading | Complete |
+| Unit tests | 159 tests |
 
 ## Architecture
 
@@ -64,8 +78,16 @@ ctest -L slow --output-on-failure
 
 ## Performance
 
-Current performance on CPU (single-threaded, no SIMD):
-- ~2.7 seconds per token (Qwen3-4B, Release build)
+Current performance on CPU (Qwen3-4B, Release build, no SIMD):
+- Single-threaded: ~0.37 tok/s (~2.7s per token)
+- Multi-threaded (20 threads): ~4.3 tok/s (~11x speedup)
+
+Use `-t N` to set thread count (defaults to all cores).
+
+OpenMP parallelization targets:
+- Matrix multiplications (2D, 3D, 4D with GQA support)
+- Attention Q/K normalization
+- Causal mask application
 
 Uses stride-based tensor views to minimize memory copies. See `docs/tensor-views-migration.md` for implementation details.
 
