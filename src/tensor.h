@@ -11,10 +11,6 @@
 #include <stdexcept>
 #include <vector>
 
-// Forward declarations
-template <typename T>
-class Tensor;
-
 // ============================================================================
 // Shape class - represents tensor dimensions
 // ============================================================================
@@ -142,9 +138,6 @@ class Tensor {
 
   // Apply function element-wise
   Tensor<T> apply(std::function<T(T)> func) const;
-
-  // Deprecated - for backwards compatibility
-  const Shape& dims() const { return shape_; }
 
  private:
   Shape shape_;
