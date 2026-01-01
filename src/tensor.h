@@ -74,7 +74,7 @@ class Tensor {
 
   // Shape manipulation
   Tensor<T> reshape(const Shape& new_shape) const;
-  Tensor<T> transpose() const;  // 2D transpose
+  Tensor<T> transpose() const;                          // 2D transpose
   Tensor<T> transpose(size_t dim0, size_t dim1) const;  // swap two dimensions
   Tensor<T> permute(const std::vector<size_t>& dims) const;
   Tensor<T> squeeze(size_t dim) const;
@@ -172,8 +172,7 @@ inline Shape::Shape(const std::vector<size_t>& dims) : dims_(dims) {
 inline const std::vector<size_t>& Shape::dims() const { return dims_; }
 
 inline size_t Shape::operator[](size_t idx) const {
-  if (idx >= dims_.size())
-    throw std::out_of_range("Shape index out of range");
+  if (idx >= dims_.size()) throw std::out_of_range("Shape index out of range");
   return dims_[idx];
 }
 
@@ -213,8 +212,7 @@ template <typename T>
 Tensor<T>::Tensor(const Shape& s, const std::vector<T>& data)
     : shape_(s), data_(data) {
   if (data_.size() != s.numel()) {
-    throw std::runtime_error(
-        "Data size does not match shape size");
+    throw std::runtime_error("Data size does not match shape size");
   }
 }
 
@@ -493,7 +491,6 @@ Tensor<T> Tensor<T>::slice(size_t dim, size_t start, size_t end) const {
   Tensor<T> result{Shape(new_dims)};
 
   std::vector<size_t> strides = compute_strides();
-  size_t slice_stride = strides[dim];
   size_t outer_stride = (dim > 0) ? strides[dim - 1] : numel();
   size_t inner_size = (dim < dims.size() - 1) ? strides[dim] : 1;
 
@@ -1155,8 +1152,6 @@ Tensor<T> Tensor<T>::softmax(size_t dim) const {
 
   // Compute exp(x - max) and sum
   std::vector<size_t> strides = compute_strides();
-  size_t dim_size = dims[dim];
-  size_t dim_stride = strides[dim];
 
   // Copy data and subtract max, then exp
   std::vector<size_t> indices(dims.size(), 0);
@@ -1217,8 +1212,7 @@ Tensor<T> Tensor<T>::layer_norm(const Tensor<T>& weight, const Tensor<T>& bias,
   size_t norm_size = shape_[norm_dim];
 
   if (weight.numel() != norm_size || bias.numel() != norm_size) {
-    throw std::runtime_error(
-        "Weight and bias size must match last dimension");
+    throw std::runtime_error("Weight and bias size must match last dimension");
   }
 
   Tensor<T> result(shape_);
@@ -1274,8 +1268,8 @@ Tensor<T> Tensor<T>::layer_norm(const Tensor<T>& weight, const Tensor<T>& bias,
     size_t weight_idx = indices[norm_dim];
 
     result.data_[flat_idx] = (data_[flat_idx] - mean_val) /
-                             std::sqrt(var_val + eps) *
-                             weight.data()[weight_idx] +
+                                 std::sqrt(var_val + eps) *
+                                 weight.data()[weight_idx] +
                              bias.data()[weight_idx];
 
     for (int i = static_cast<int>(ndim()) - 1; i >= 0; --i) {
@@ -1324,8 +1318,7 @@ Tensor<T> Tensor<T>::rms_norm(const Tensor<T>& weight, T eps) const {
     T rms = std::sqrt(mean_sq_val + eps);
     size_t weight_idx = indices[norm_dim];
 
-    result.data_[flat_idx] =
-        data_[flat_idx] / rms * weight.data()[weight_idx];
+    result.data_[flat_idx] = data_[flat_idx] / rms * weight.data()[weight_idx];
 
     for (int i = static_cast<int>(ndim()) - 1; i >= 0; --i) {
       indices[i]++;
